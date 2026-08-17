@@ -26,6 +26,9 @@
         long press (3s) restores factory settings.
 */
 
+// 固件版本号：每次发布/重大改动时递增；会显示在网页标题下方
+#define FIRMWARE_VERSION "1.2.0"
+
 #ifdef ESP8266
   #include <ESP8266WiFi.h>
   #include <ESP8266WebServer.h>
@@ -150,7 +153,7 @@ String currentIP = "";
 
 // 运行状态
 bool lightOn = false;
-uint8_t brightnessPercent = 90;     // 0-100，默认 90%（避免 PWM 占空比为 0 导致灯不亮）
+uint8_t brightnessPercent = 100;     // 0-100，默认 100%（避免 PWM 占空比为 0 导致灯不亮）
 bool scheduleEnabled = false;
 String onTimeStr = "07:00";
 String offTimeStr = "23:00";
@@ -230,7 +233,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 <body>
 <div class="container">
   <h1>智能灯控</h1>
-  <div class="subtitle">ESP Light Switch</div>
+  <div class="subtitle" id="subtitle">ESP Light Switch</div>
 
   <div class="tabs">
     <div class="tab active" id="tabBtn-control" onclick="switchTab('control')">控制</div>
@@ -446,6 +449,8 @@ async function refresh() {
     const upM = Math.floor((d.uptime % 3600) / 60).toString().padStart(2,'0');
     const upS = (d.uptime % 60).toString().padStart(2,'0');
     $('status').innerText = '已连接 (' + d.ip + ') · 运行 ' + upH + ':' + upM + ':' + upS;
+    var fv = (d.ver && d.ver.length) ? d.ver : '?';
+    $('subtitle').innerText = 'ESP Light Switch · v' + fv;
   } catch(e) {
     $('status').innerText = '连接失败，请检查网络后刷新';
   }
@@ -832,6 +837,7 @@ void handleStatus() {
   json += "\"adcMax\":" + String(ADC_MAX) + ",";
   json += "\"curThrMA\":" + String(CURRENT_ZERO_THRESHOLD_A * 1000.0f, 0) + ",";
   json += "\"curCal\":" + String(CURRENT_CAL_SCALE, 2) + ",";
+  json += "\"ver\":\"" + String(FIRMWARE_VERSION) + "\",";
   json += "\"uptime\":" + String(millis() / 1000UL);
   json += "}";
   server.send(200, "application/json", json);
