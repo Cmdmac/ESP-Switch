@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ESP 智能灯控（预览）</title>
+<style>
+  :root { --primary: #2196F3; --bg: #f5f5f5; --card: #fff; --text: #333; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
+  .container { max-width: 480px; margin: 0 auto; padding: 20px; }
+  h1 { text-align: center; font-size: 1.4rem; margin-bottom: 6px; }
+  .subtitle { text-align: center; color: #888; font-size: 0.85rem; margin-bottom: 20px; }
+  .card { background: var(--card); border-radius: 16px; padding: 18px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+  .row { display: flex; justify-content: space-between; align-items: center; margin: 14px 0; }
+  .row:first-child { margin-top: 0; }
+  .row:last-child { margin-bottom: 0; }
+  .label { font-size: 0.9rem; color: #555; }
+  .value { font-size: 1.05rem; color: #111; font-weight: 500; }
+  .switch { position: relative; display: inline-block; width: 56px; height: 30px; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background: #ccc; border-radius: 30px; transition: .3s; }
+  .slider:before { position: absolute; content: ""; height: 22px; width: 22px; left: 4px; bottom: 4px; background: white; border-radius: 50%; transition: .3s; }
+  input:checked + .slider { background: var(--primary); }
+  input:checked + .slider:before { transform: translateX(26px); }
+  input[type=range] { width: 100%; margin: 10px 0; }
+  .metric { font-size: 1.7rem; font-weight: 600; color: var(--primary); }
+  .metric-label { font-size: 0.8rem; color: #888; }
+  input[type=time] { border: 1px solid #ddd; border-radius: 8px; padding: 6px; font-size: 1rem; }
+  input[type=text], input[type=password] { border: 1px solid #ddd; border-radius: 8px; padding: 6px; font-size: 1rem; }
+  button { width: 100%; padding: 14px; border: none; border-radius: 12px; background: var(--primary); color: white; font-size: 1rem; cursor: pointer; transition: opacity .2s; }
+  button:active { opacity: 0.85; }
+  .note { font-size: 0.75rem; color: #999; margin-top: 10px; text-align: center; }
+  .banner { background: #fff7e6; border: 1px solid #ffd591; color: #ad6800; border-radius: 12px; padding: 10px 14px; font-size: 0.82rem; margin-bottom: 16px; display:flex; justify-content:space-between; align-items:center; gap:10px; }
+  .banner button { width: auto; padding: 8px 12px; font-size: 0.82rem; background: #fa8c16; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>智能灯控</h1>
+  <div class="subtitle">ESP Light Switch · 本地预览</div>
+
+  <div class="banner" id="banner">
+    <span>预览模式：使用模拟数据，未连接 ESP32。</span>
+    <button type="button" onclick="enableDeviceMode()">连接真实设备</button>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <span class="label">电源开关</span>
+      <label class="switch">
+        <input type="checkbox" id="power" onchange="setPower()">
+        <span class="slider"></span>
+      </label>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <span class="label">亮度</span>
+      <span class="value" id="brightnessVal">50%</span>
+    </div>
+    <input type="range" id="brightness" min="0" max="100" value="50" oninput="updateBrightnessLabel()" onchange="setBrightness()">
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <div class="metric-label">环境亮度</div>
+        <div class="metric" id="ambient">--</div>
+      </div>
+      <div style="text-align:right;">
+        <div class="metric-label">实时电流</div>
+        <div class="metric" id="current">--</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <span class="label">定时开关</span>
+      <label class="switch">
+        <input type="checkbox" id="scheduleEn" onchange="saveSchedule()">
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="row">
+      <span class="label">开启时间</span>
+      <input type="time" id="onTime" onchange="saveSchedule()">
+    </div>
+    <div class="row">
+      <span class="label">关闭时间</span>
+      <input type="time" id="offTime" onchange="saveSchedule()">
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <span class="label">网络模式</span>
+      <span class="value" id="netMode">--</span>
+    </div>
+    <div class="row">
+      <span class="label">当前地址</span>
+      <span class="value" id="netIp">--</span>
+    </div>
+    <div class="row">
+      <span class="label">Wi-Fi 名称</span>
+      <input type="text" id="wifiSsid" placeholder="SSID" style="width:55%;">
+    </div>
+    <div class="row">
+      <span class="label">密码</span>
+      <input type="password" id="wifiPassword" placeholder="留空不修改" style="width:55%;">
+    </div>
+    <button type="button" onclick="saveWiFi()">保存并连接 Wi-Fi</button>
+    <div class="note"><a href="#" onclick="forgetWiFi();return false;" style="color:#888;">忘记 Wi-Fi，恢复热点模式</a></div>
+  </div>
+
+  <button onclick="saveSettings()">保存灯光设置到 Flash</button>
+  <div class="note" id="status">预览模式已就绪</div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+// ===== 模式：本地双击打开时为预览（模拟数据），连真实设备时改为 fetch =====
+let DEMO_MODE = (location.protocol === 'file:' || location.protocol === 'http:');
+let BASE_URL = '';           // 真实设备模式下填写，例如 http://192.168.4.1
+let startMs = Date.now();    // 用于模拟 uptime
+
+// 本地状态（预览模式下的数据源）
+const state = {
+  on: false, brightness: 50, ambient: 0, current: 0,
+  scheduleEnabled: false, onTime: '07:00', offTime: '23:00',
+  mode: 'ap', ip: '192.168.4.1', wifiSsid: 'ESP-Light-Switch'
+};
+
+function updateBrightnessLabel() { $('brightnessVal').innerText = $('brightness').value + '%'; }
+
+// ===== 模拟数据生成 =====
+function mockStatus() {
+  // 环境亮度随机游走
+  state.ambient += (Math.random() * 16 - 8);
+  state.ambient = Math.max(0, Math.min(100, state.ambient));
+  // 电流：开灯时随亮度变化，关灯约 0
+  if (state.on) {
+    const target = (state.brightness / 100) * 1.05 + Math.random() * 0.05;
+    state.current += (target - state.current) * 0.3;
+  } else {
+    state.current *= 0.7;
+  }
+  return Promise.resolve(JSON.stringify({
+    on: state.on, brightness: state.brightness,
+    ambient: Math.round(state.ambient), current: +state.current.toFixed(3),
+    scheduleEnabled: state.scheduleEnabled, onTime: state.onTime, offTime: state.offTime,
+    mode: state.mode, ip: state.ip, wifiSsid: state.wifiSsid,
+    uptime: Math.floor((Date.now() - startMs) / 1000)
+  }));
+}
+
+// ===== 数据拉取（兼容预览/真实设备）=====
+async function fetchStatus() {
+  if (DEMO_MODE) {
+    const t = await mockStatus();
+    return JSON.parse(t);
+  }
+  const r = await fetch(BASE_URL + '/api/status');
+  return await r.json();
+}
+
+async function postDevice(url) {
+  if (DEMO_MODE) {
+    $('status').innerText = '预览模式：操作仅本地生效（无设备）';
+    setTimeout(() => { if ($('status').innerText.startsWith('预览')) $('status').innerText = ''; }, 2000);
+    return null;
+  }
+  return await fetch(BASE_URL + url, {method:'POST'});
+}
+
+async function setPower() {
+  state.on = $('power').checked;
+  await postDevice('/api/power?state=' + (state.on ? 'on' : 'off'));
+  refresh();
+}
+
+async function setBrightness() {
+  state.brightness = parseInt($('brightness').value, 10);
+  await postDevice('/api/brightness?value=' + state.brightness);
+  refresh();
+}
+
+async function saveSchedule() {
+  state.scheduleEnabled = $('scheduleEn').checked;
+  state.onTime = $('onTime').value;
+  state.offTime = $('offTime').value;
+  await postDevice('/api/schedule?enabled=' + (state.scheduleEnabled?1:0) + '&on=' + state.onTime + '&off=' + state.offTime);
+  refresh();
+}
+
+async function saveSettings() {
+  await postDevice('/api/save');
+  $('status').innerText = DEMO_MODE ? '预览模式：设置仅本地生效' : '设置已保存到 Flash';
+  setTimeout(() => { if ($('status').innerText) $('status').innerText = ''; }, 2000);
+}
+
+async function saveWiFi() {
+  const ssid = $('wifiSsid').value;
+  const pwd = $('wifiPassword').value;
+  if (!ssid) { alert('请填写 Wi-Fi 名称'); return; }
+  if (DEMO_MODE) {
+    state.wifiSsid = ssid;
+    $('status').innerText = '预览模式：已记录 SSID（无设备）';
+    setTimeout(() => $('status').innerText = '', 2000);
+    return;
+  }
+  await fetch(BASE_URL + '/api/wifi?ssid=' + encodeURIComponent(ssid) + '&password=' + encodeURIComponent(pwd), {method:'POST'});
+  $('status').innerText = '已保存，正在重启连接 Wi-Fi...';
+}
+
+async function forgetWiFi() {
+  if (!confirm('确定恢复热点模式？设备将断开局域网。')) return;
+  if (DEMO_MODE) {
+    $('status').innerText = '预览模式：无设备';
+    return;
+  }
+  await fetch(BASE_URL + '/api/forgetwifi', {method:'POST'});
+  $('status').innerText = '正在重启进入热点模式...';
+}
+
+// ===== 连接真实设备 =====
+function enableDeviceMode() {
+  const ip = prompt('输入 ESP32 的 IP 地址（热点默认 192.168.4.1）：', '192.168.4.1');
+  if (!ip) return;
+  BASE_URL = 'http://' + ip.trim();
+  DEMO_MODE = false;
+  $('banner').style.display = 'none';
+  $('status').innerText = '已切换为真实设备模式：' + BASE_URL;
+  refresh();
+}
+
+// ===== 刷新界面 =====
+async function refresh() {
+  try {
+    const d = await fetchStatus();
+    $('power').checked = d.on;
+    $('brightness').value = d.brightness;
+    $('brightnessVal').innerText = d.brightness + '%';
+    $('ambient').innerText = d.ambient + '%';
+    $('current').innerText = d.current + 'A';
+    $('scheduleEn').checked = d.scheduleEnabled;
+    $('onTime').value = d.onTime;
+    $('offTime').value = d.offTime;
+    $('netMode').innerText = (d.mode === 'sta') ? '局域网' : '热点';
+    $('netIp').innerText = d.ip;
+    if (!$('wifiSsid').value) $('wifiSsid').value = d.wifiSsid;
+    const upH = Math.floor(d.uptime / 3600).toString().padStart(2,'0');
+    const upM = Math.floor((d.uptime % 3600) / 60).toString().padStart(2,'0');
+    const upS = (d.uptime % 60).toString().padStart(2,'0');
+    $('status').innerText = (DEMO_MODE ? '预览模式 · ' : '已连接 (' + d.ip + ') · ') + '运行 ' + upH + ':' + upM + ':' + upS;
+  } catch(e) {
+    $('status').innerText = '连接失败，请检查设备 IP 后刷新';
+  }
+}
+
+setInterval(refresh, 2000);
+refresh();
+</script>
+</body>
+</html>
