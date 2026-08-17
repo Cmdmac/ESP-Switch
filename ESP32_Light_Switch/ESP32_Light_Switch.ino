@@ -2,13 +2,13 @@
   ESP32-C2 / ESP32-C3 / ESP8285 Smart Light Switch
   =================================================
   - Wi-Fi AP mode for direct connection (no router needed)
-  - Web UI: on/off, (ESP32) brightness slider, (ESP32) ambient light display, current display
+  - Web UI: on/off, brightness slider (ESP32 & ESP8285 PWM), (ESP32) ambient light display, current display
   - Daily schedule: auto turn on/off at configured times
   - Persist settings to flash
 
   Supported chips (single sketch, selected by the board you pick):
   - ESP32-C2 / ESP32-C3 : PWM dimming + ambient + current; multi ADC channels
-  - ESP8285 (ESP8266)    : on/off only (NO brightness), current only; single ADC (A0)
+  - ESP8285 (ESP8266)    : on/off + PWM brightness (GPIO5 analogWrite), current only; single ADC (A0)
 
   Hardware (ESP32 default pin mapping):
   - GPIO2 : lamp PWM output (brightness control)
@@ -32,6 +32,23 @@
   #include <ESP8266mDNS.h>
   #include <EEPROM.h>
   #include <Updater.h>        // 网页 OTA 固件升级（esp8266 的 Update 类）
+
+  // ---- ESP8266 专用：必须放在“最后一个 #include”之前 ----
+  // Arduino IDE 会自动生成函数前向原型并插在最后一个 #include 之后，
+  // 若 SettingsStore 定义在原型之后就会报 “was not declared in this scope”。
+  #define EEPROM_SIZE 256
+  typedef struct {
+    uint8_t lightOn;
+    uint8_t brightness;
+    uint8_t schedEn;
+    char onTime[6];
+    char offTime[6];
+    char wifiSsid[33];
+    char wifiPassword[65];
+  } SettingsStore;
+
+  // ESP8266 的 Updater 不提供 UPDATE_SIZE_UNKNOWN，用最大可写固件空间代替
+  #define UPDATE_SIZE_UNKNOWN ESP.getFreeSketchSpace()
 #else
   #include <WiFi.h>
   #include <WebServer.h>
@@ -42,21 +59,23 @@
 
 // ==================== 硬件引脚配置（按芯片分两套） ====================
 // ESP32-C2/C3：多 ADC 通道，支持亮度 PWM + 环境光 + 电流
-// ESP8285    ：单 ADC（A0，0~1.0V），本设计不做亮度（无 PWM 调光）、
-//              不读环境光，仅用 A0 做电流检测；灯为开关量（数字输出）
+// ESP8285    ：单 ADC（A0，0~1.0V），不做环境光、仅用 A0 做电流检测；
+//              灯用 GPIO5 的 analogWrite() 软件 PWM 做开关 + 亮度调光
 #ifdef ESP8266
   // ---- ESP8285 / ESP8266 引脚（按你的 ESP8285 板实际接线修改） ----
-  #define LIGHT_PWM_PIN           12    // 灯控数字输出（继电器/SSR）。避免 strapping 脚 GPIO0/2/15
+  #define LIGHT_PWM_PIN           5    // 灯控数字输出（继电器/SSR）。避免 strapping 脚 GPIO0/2/15
+  #define RELAY_ACTIVE_LOW        0     // 1=低电平吸合（多数继电器模块），0=高电平吸合。若灯“相反/不受控”改 1
   #define STATUS_LED_PIN          (-1)  // 无独立状态 LED
   #define AMBIENT_LIGHT_ADC_PIN   (-1)  // ESP8285 仅 1 路 ADC，已留给电流检测，故不读环境光
   #define CURRENT_ADC_PIN         A0    // 电流检测（唯一 ADC 通道，量程 0~1.0V）
   #define BUTTON_PIN              0     // 板载 BOOT/下载键通常是 GPIO0（低电平有效）
   // 功能开关
-  #define BRIGHTNESS_SUPPORTED    0     // ESP8285 不支持亮度（无 PWM 调光）
+  #define BRIGHTNESS_SUPPORTED    1     // ESP8285 用 analogWrite() 支持亮度 PWM 调光
   #define AMBIENT_SUPPORTED       0     // 不读环境光
   #define CURRENT_SUPPORTED       1     // 保留实时电流显示
   #define ADC_MAX                 1023  // ESP8285/ESP8266 ADC 为 10 位
   #define ADC_VREF_MV             1000  // ESP8285/ESP8266 ADC 量程 0~1.0V（与 ESP32 的 3.3V 不同）
+  #define CURRENT_CAL_SCALE       1.6f  // 实测校准：该板同负载实测电流约为显示值的 2.2 倍，用于修正分压/增益总误差
 #else
   // ---- ESP32-C2/C3 引脚 ----
   #define LIGHT_PWM_PIN           2     // 灯 PWM 输出（直接驱动灯，板载无独立状态 LED）
@@ -69,6 +88,7 @@
   #define CURRENT_SUPPORTED       1
   #define ADC_MAX                 4095  // ESP32 ADC 12 位
   #define ADC_VREF_MV             3300  // 使用 ADC_11db 衰减后约 0~3.3V
+  #define CURRENT_CAL_SCALE       1.0f  // ESP32 参考板暂不校准
 #endif
 
 // 本地 BOOT 键复用为两个功能（单一按键，低电平有效，内部上拉）：
@@ -84,15 +104,27 @@
 #define PWM_MAX_DUTY    1023
 
 // ==================== 电流检测校准 ====================
-// 原理图电流检测部分：
-// - U4 : INA180A1IDBVR  电流检测放大器，固定增益 20 V/V
-// - R83: 150 mΩ         高侧分流电阻（位于 VCC 与 USB 输出 VOUT 之间）
-// 公式：电流(A) = ADC 电压(V) / (分流电阻(Ω) * 放大器增益)
-// ESP32  : 1A 时输出 3.0V（满量程约 1.1A，ADC 量程 3.3V 够用）
-// ESP8285: ADC 量程仅 1.0V -> 最大可测电流约 1.0/(0.15*20)=0.33A；
-//          若你的 ESP8285 板电流检测输出超过 1.0V，请加电阻分压或减小增益。
-#define SHUNT_RESISTANCE_MILLIOHM  150.0f
-#define CURRENT_SENSE_GAIN         20.0f
+// 电流检测部分（以用户 ESPHome 工作配置为准）：
+// - INA180A1IDBVR  电流检测放大器，固定增益 20 V/V
+// - R_shunt = 20 mΩ（高侧分流电阻，位于 VCC 与 USB 输出 VOUT 之间）
+// - 分压 = 1/3（INA180 输出分压到 ESP8285 A0，A0 只能 0~1.0V）
+// 公式：电流(A) = ADC 电压(V) / (分流电阻(Ω) * 放大器增益 * 分压比)
+//             = V_adc / (0.02 * 20 * 1/3) = V_adc * 7.5   （与 ESPHome 的 multiply:7500 一致）
+// 最大可测电流 ≈ 1.0V / (0.02*20*1/3) ≈ 7.5A。
+#ifdef ESP8266
+  #define SHUNT_RESISTANCE_MILLIOHM    20.0f      // 分流电阻，单位 mΩ（按 ESPHome：20 mΩ）
+  #define CURRENT_SENSE_GAIN           20.0f      // INA180A1 固定增益 20 V/V
+  #define CURRENT_SENSE_DIVIDER_RATIO  (1.0f/3.0f) // 分压比 1/3
+#else
+  // ESP32 参考板：无输出分压，直接 3.3V ADC
+  #define SHUNT_RESISTANCE_MILLIOHM    20.0f
+  #define CURRENT_SENSE_GAIN           20.0f
+  #define CURRENT_SENSE_DIVIDER_RATIO  1.0f
+#endif
+
+// 清零阈值：低于该电流(A)视为 INA180 偏置/噪声，归零不显示。
+// 原按 ESPHome 取 0.045A(≈6mV)；本负载仅 ~15mA 且空载干净归零，下调到 0.010A 以便显示小负载。
+#define CURRENT_ZERO_THRESHOLD_A  0.010f
 
 // ==================== Wi-Fi AP 配置 ====================
 #define AP_SSID         "ESP-Light-Switch"
@@ -118,13 +150,14 @@ String currentIP = "";
 
 // 运行状态
 bool lightOn = false;
-uint8_t brightnessPercent = 50;     // 0-100
+uint8_t brightnessPercent = 90;     // 0-100，默认 90%（避免 PWM 占空比为 0 导致灯不亮）
 bool scheduleEnabled = false;
 String onTimeStr = "07:00";
 String offTimeStr = "23:00";
 
 // 本地按键（= 板载 BOOT 键 GPIO9）
-bool lastButtonState = HIGH;
+bool lastButtonState = HIGH;       // 上一次原始读值（用于检测变化、重启去抖计时）
+bool buttonStable = HIGH;           // 去抖后的稳定态，用于检测按下/松开跳变
 unsigned long lastDebounce = 0;
 const unsigned long DEBOUNCE_MS = 50;
 unsigned long pressStart = 0;     // 本次按下的起始时间
@@ -137,6 +170,11 @@ uint16_t offTimeMinutes = 23 * 60;
 // 电流采样平滑
 float currentSmoothed = 0.0f;
 const float CURRENT_ALPHA = 0.2f;
+
+// 电流诊断（供网页显示，实时刷新）
+int      diagRawAdc     = 0;       // 原始 ADC 读数（0 ~ ADC_MAX）
+uint32_t diagMv         = 0;        // A0 电压 (mV)
+float    diagCurrentMA  = 0.0f;     // 计算电流 (mA)
 
 // LEDC API 兼容性（仅 ESP32 系列使用；ESP8285 无 LEDC，亮度由数字输出实现）
 #ifndef ESP8266
@@ -214,9 +252,9 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
     <div class="card" id="card-brightness">
       <div class="row">
         <span class="label">亮度</span>
-        <span class="value" id="brightnessVal">50%</span>
+        <span class="value" id="brightnessVal">90%</span>
       </div>
-      <input type="range" id="brightness" min="0" max="100" value="50" oninput="updateBrightnessLabel()" onchange="setBrightness()">
+      <input type="range" id="brightness" min="0" max="100" value="90" oninput="updateBrightnessLabel()" onchange="setBrightness()">
     </div>
 
     <div class="card">
@@ -225,11 +263,18 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
           <div class="metric-label">环境亮度</div>
           <div class="metric" id="ambient">--</div>
         </div>
-        <div style="text-align:right;">
+        <div>
           <div class="metric-label">实时电流</div>
-          <div class="metric" id="current">--</div>
+          <div class="metric" id="current" style="cursor:pointer;">--</div>
         </div>
       </div>
+    </div>
+
+    <div class="card" id="card-diag" style="display:none;">
+      <div class="row" style="margin:0;">
+        <span class="label">电流诊断</span>
+      </div>
+      <div class="note" id="diag" style="text-align:left;margin-top:8px;font-family:Consolas,Menlo,monospace;">--</div>
     </div>
 
     <div class="card">
@@ -290,6 +335,18 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 
 <script>
 const $ = id => document.getElementById(id);
+// 电流自动切换单位：<1A 显示 mA，≥1A 显示 A
+function fmtCurrent(a) {
+  if (!(typeof a === 'number') || !isFinite(a) || a < 0) a = 0;
+  if (a < 1.0) return (a * 1000).toFixed(1) + ' mA';
+  return a.toFixed(2) + ' A';
+}
+// 电流诊断卡片：点击实时电流，整张卡片显示/隐藏（无箭头）
+function toggleDiag() {
+  var cd = $('card-diag');
+  if (!cd) return;
+  cd.style.display = (cd.style.display === 'none') ? 'block' : 'none';
+}
 function updateBrightnessLabel() { $('brightnessVal').innerText = $('brightness').value + '%'; }
 function switchTab(name) {
   ['control','network','ota'].forEach(t => {
@@ -359,7 +416,10 @@ async function refresh() {
     $('brightness').value = d.brightness;
     $('brightnessVal').innerText = d.brightness + '%';
     $('ambient').innerText = d.ambient + '%';
-    $('current').innerText = d.current + 'A';
+    // 电流显示：小电流用 mA，大电流(≥1A)用 A，自动切换单位（与诊断同源，均带 1 位小数）
+    var cur = parseFloat(d.current);
+    if (!(typeof cur === 'number') || !isFinite(cur) || cur < 0) cur = 0;
+    $('current').innerText = fmtCurrent(cur);
     $('scheduleEn').checked = d.scheduleEnabled;
     $('onTime').value = d.onTime;
     $('offTime').value = d.offTime;
@@ -368,6 +428,19 @@ async function refresh() {
     // 按设备能力隐藏不支持的功能（ESP8285 不做亮度、不读环境光）
     if (d.brightnessSup != 1) { const bc = $('card-brightness'); if (bc) bc.style.display = 'none'; }
     if (d.ambientSup != 1) { const aw = $('ambientWrap'); if (aw) aw.style.display = 'none'; }
+    // 电流诊断卡片：仅启用电流检测时显示
+    if (d.currentSup != 1) { const dc = $('card-diag'); if (dc) dc.style.display = 'none'; }
+    else {
+      var mA = (typeof d.diagMA === 'number' && isFinite(d.diagMA)) ? d.diagMA : 0;
+      var raw = (typeof d.diagRaw === 'number') ? d.diagRaw : 0;
+      var mv = (typeof d.diagMv === 'number') ? d.diagMv : 0;
+      var amax = (typeof d.adcMax === 'number' && d.adcMax > 0) ? d.adcMax : 1023;
+      $('diag').innerText =
+        'raw=' + raw + '/' + amax +
+        '  A0=' + mv + 'mV' +
+        '  计算=' + fmtCurrent(mA / 1000.0) +
+        '  (阈值' + (d.curThrMA || 45) + 'mA以下→实时电流显示0，校准×' + (d.curCal || 1) + ')';
+    }
     if (!$('wifiSsid').value) $('wifiSsid').value = d.wifiSsid;
     const upH = Math.floor(d.uptime / 3600).toString().padStart(2,'0');
     const upM = Math.floor((d.uptime % 3600) / 60).toString().padStart(2,'0');
@@ -378,6 +451,7 @@ async function refresh() {
   }
 }
 
+$('current').addEventListener('click', toggleDiag);
 setInterval(refresh, 2000);
 refresh();
 </script>
@@ -387,14 +461,21 @@ refresh();
 
 // ==================== 辅助函数 ====================
 #ifdef ESP8266
-// ESP8285/ESP8266：灯为开关量（数字输出），无 PWM 调光
+// ESP8285/ESP8266：用 analogWrite() 软件 PWM 驱动 GPIO5（支持亮度调光）
+// 说明：ESP8266 无硬件 PWM，analogWrite 由定时器中断实现，频率默认 1kHz，
+//       分辨率 0~1023（10 位）。继电器模块建议亮度保持 100%，中间值会令其抖动/蜂鸣。
 void setupPWM() {
   pinMode(LIGHT_PWM_PIN, OUTPUT);
-  digitalWrite(LIGHT_PWM_PIN, LOW);
+  analogWriteFreq(1000);          // 1kHz，适合 LED 调光；继电器无需调光可保持 100%
+  analogWriteRange(1023);         // 0~1023（10 位分辨率）
+  analogWrite(LIGHT_PWM_PIN, 0);  // 先关
 }
 
 void setLightOutput() {
-  digitalWrite(LIGHT_PWM_PIN, lightOn ? HIGH : LOW);
+  // 期望电平：0=灭；亮灯时按 brightnessPercent 映射到 0~1023 作为占空比
+  uint16_t level = lightOn ? (uint16_t)((uint32_t)brightnessPercent * 1023 / 100) : 0;
+  if (RELAY_ACTIVE_LOW) level = 1023 - level;   // 低电平吸合：反转电平
+  analogWrite(LIGHT_PWM_PIN, level);
   if (STATUS_LED_PIN >= 0 && STATUS_LED_PIN != LIGHT_PWM_PIN) {
     digitalWrite(STATUS_LED_PIN, lightOn ? HIGH : LOW);
   }
@@ -444,11 +525,22 @@ uint8_t readAmbientPercent() {
 }
 
 float readCurrentA() {
+  if (!CURRENT_SUPPORTED) { diagRawAdc = 0; diagMv = 0; diagCurrentMA = 0; return 0.0f; }
+  int rawAdc = (int)analogRead(CURRENT_ADC_PIN);   // 单次原始读数，用于网页诊断展示
   uint32_t mv = readVoltageMV(CURRENT_ADC_PIN);
   float shuntOhm = SHUNT_RESISTANCE_MILLIOHM / 1000.0f;
-  if (shuntOhm <= 0.0f || CURRENT_SENSE_GAIN <= 0.0f) return 0.0f;
-  float current = (mv / 1000.0f) / (shuntOhm * CURRENT_SENSE_GAIN);
-  if (current < 0.01f) current = 0.0f;
+  if (shuntOhm <= 0.0f || CURRENT_SENSE_GAIN <= 0.0f) {
+    diagRawAdc = rawAdc; diagMv = mv; diagCurrentMA = 0;
+    return 0.0f;
+  }
+  float currentRaw = (mv / 1000.0f) / (shuntOhm * CURRENT_SENSE_GAIN * CURRENT_SENSE_DIVIDER_RATIO);
+  diagRawAdc = rawAdc;
+  diagMv = mv;
+  // 低于清零阈值视为 INA180 偏置底噪：先用原始（未校准）电流判断并归零，避免空载被校准后误显示
+  float current = currentRaw;
+  if (current < CURRENT_ZERO_THRESHOLD_A) current = 0.0f;
+  current *= CURRENT_CAL_SCALE;   // 校准放在归零之后：修正该板分压/增益总误差
+  diagCurrentMA = current * 1000.0f;
   currentSmoothed = CURRENT_ALPHA * current + (1.0f - CURRENT_ALPHA) * currentSmoothed;
   return currentSmoothed;
 }
@@ -496,15 +588,26 @@ void handleButton() {
   if (BUTTON_PIN < 0) return;
   bool reading = digitalRead(BUTTON_PIN);  // BOOT 键低电平有效
   if (reading != lastButtonState) {
-    lastDebounce = millis();
+    lastDebounce = millis();              // 状态变化，重启去抖计时
   }
   if ((millis() - lastDebounce) > DEBOUNCE_MS) {
-    // 按下瞬间：记录起始时间
-    if (reading == LOW && lastButtonState == HIGH) {
-      pressStart = millis();
-      longPressFired = false;
+    // 去抖通过后，用稳定态 buttonStable 检测“按下/松开”的真实跳变
+    if (reading != buttonStable) {
+      buttonStable = reading;
+      if (reading == LOW) {
+        // 刚按下：记录起始时间（pressStart 现在一定会被正确赋值）
+        pressStart = millis();
+        longPressFired = false;
+      } else {
+        // 刚松开，且未触发长按 -> 短按切换灯开关
+        if (!longPressFired) {
+          lightOn = !lightOn;
+          setLightOutput();
+          Serial.println(lightOn ? "短按：开灯" : "短按：关灯");
+        }
+      }
     }
-    // 持续按住达到时长：恢复出厂
+    // 持续按住达到时长：恢复出厂（仅在稳定为 LOW 期间检测）
     if (reading == LOW && !longPressFired && (millis() - pressStart >= RESET_HOLD_MS)) {
       longPressFired = true;
       Serial.println("长按重置：清空所有设置并重启到热点模式...");
@@ -518,12 +621,6 @@ void handleButton() {
       delay(300);
       ESP.restart();
     }
-    // 松开瞬间（且未触发长按）：短按切换灯开关
-    if (reading == HIGH && lastButtonState == LOW && !longPressFired) {
-      lightOn = !lightOn;
-      setLightOutput();
-      Serial.println(lightOn ? "短按：开灯" : "短按：关灯");
-    }
   }
   lastButtonState = reading;
 #endif
@@ -531,24 +628,17 @@ void handleButton() {
 
 // ==================== ESP8285/ESP8266 EEPROM 持久化层 ====================
 // ESP8285/ESP8266 没有 Preferences 库，用 EEPROM 模拟（固定布局）。
+// 注意：SettingsStore 与 EEPROM_SIZE 已在文件顶部（最后一个 #include 之前）
+// 提前声明，否则 Arduino 自动生成的函数前向原型会因看不到该结构体而报错。
 #ifdef ESP8266
-#include <EEPROM.h>
-#define EEPROM_SIZE 256
-typedef struct {
-  uint8_t lightOn;
-  uint8_t brightness;
-  uint8_t schedEn;
-  char onTime[6];
-  char offTime[6];
-  char wifiSsid[33];
-  char wifiPassword[65];
-} SettingsStore;
-
 static void eepromRead(SettingsStore& s) {
   EEPROM.begin(EEPROM_SIZE);
   EEPROM.get(0, s);
   EEPROM.end();
-  if (s.lightOn == 0xFF) memset(&s, 0, sizeof(s));  // 全新未写过（Flash 全 0xFF）当作空
+  if (s.lightOn == 0xFF) {        // 全新未写过（Flash 全 0xFF）当作空，但写入合理默认
+    memset(&s, 0, sizeof(s));
+    s.brightness = 90;            // 默认 90%，避免 PWM 占空比为 0 导致灯不亮、开关失灵
+  }
 }
 static void eepromWrite(const SettingsStore& s) {
   EEPROM.begin(EEPROM_SIZE);
@@ -569,7 +659,7 @@ void loadSettings() {
 #ifdef ESP8266
   SettingsStore s; eepromRead(s);
   lightOn = s.lightOn ? true : false;
-  brightnessPercent = s.brightness;          // ESP8285 未使用亮度
+  brightnessPercent = s.brightness;          // ESP8285 用 analogWrite() PWM 调光
   scheduleEnabled = s.schedEn ? true : false;
   onTimeStr = String(s.onTime);
   offTimeStr = String(s.offTime);
@@ -665,6 +755,10 @@ void setupNetwork() {
     Serial.print("尝试连接 Wi-Fi: ");
     Serial.println(wifiSsid);
     WiFi.mode(WIFI_STA);
+#ifdef ESP8266
+    WiFi.persistent(true);
+    WiFi.setAutoReconnect(true);   // ESP8266：SDK 层自动回连已配网络
+#endif
     WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str());
 
     unsigned long start = millis();
@@ -698,6 +792,19 @@ void setupNetwork() {
   Serial.println(currentIP);
 }
 
+// 运行时保活：已成功连上局域网(staMode==true)后若中途掉线，自动用已保存的
+// 凭证重新连接。热点模式(staMode==false)下不干预，避免 AP/STA 反复横跳。
+void ensureWiFi() {
+  static unsigned long lastCheck = 0;
+  if (millis() - lastCheck < 5000) return;   // 每 5 秒检查一次，省 CPU
+  lastCheck = millis();
+  if (!staMode) return;
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("STA 掉线，尝试用已保存的 Wi-Fi 重连...");
+    WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str());
+  }
+}
+
 // ==================== Web 路由 ====================
 void handleRoot() {
   server.send(200, "text/html", String(FPSTR(INDEX_HTML)));
@@ -718,6 +825,13 @@ void handleStatus() {
   json += "\"brightnessSup\":" + String(BRIGHTNESS_SUPPORTED) + ",";
   json += "\"ambientSup\":" + String(AMBIENT_SUPPORTED) + ",";
   json += "\"currentSup\":" + String(CURRENT_SUPPORTED) + ",";
+  // 电流诊断（供网页显示）：原始 ADC、A0 电压(mV)、计算电流(mA)、ADC 满量程
+  json += "\"diagRaw\":" + String(diagRawAdc) + ",";
+  json += "\"diagMv\":" + String(diagMv) + ",";
+  json += "\"diagMA\":" + String(diagCurrentMA, 1) + ",";
+  json += "\"adcMax\":" + String(ADC_MAX) + ",";
+  json += "\"curThrMA\":" + String(CURRENT_ZERO_THRESHOLD_A * 1000.0f, 0) + ",";
+  json += "\"curCal\":" + String(CURRENT_CAL_SCALE, 2) + ",";
   json += "\"uptime\":" + String(millis() / 1000UL);
   json += "}";
   server.send(200, "application/json", json);
@@ -807,6 +921,16 @@ void setup() {
   setLightOutput();
   setupNetwork();
 
+  // 电流采样诊断（ESP8285）：开灯后看这一行，与网页「电流诊断」卡片内容一致。
+  //   - raw=0 / mV=0  → 硬件上 A0 没信号（INA180 输出没接到 A0，或 R_shunt/分压未焊好），与软件无关。
+  //   - mV 有值但电流算错 → 多半是 SHUNT_RESISTANCE_MILLIOHM / 分压比还需微调。
+  if (CURRENT_SUPPORTED) {
+    readCurrentA();   // 填充 diagRawAdc / diagMv / diagCurrentMA
+    Serial.println("[电流诊断] rawADC=" + String(diagRawAdc) +
+                  "  A0电压=" + String(diagMv) + " mV" +
+                  "  计算电流=" + String(diagCurrentMA, 1) + " mA");
+  }
+
   server.on("/", HTTP_GET, handleRoot);
   server.on("/api/status", HTTP_GET, handleStatus);
   server.on("/api/power", HTTP_POST, handlePower);
@@ -860,5 +984,6 @@ void loop() {
   server.handleClient();
   applySchedule();
   handleButton();
+  ensureWiFi();   // 运行中掉线自动回连上次 Wi-Fi
   delay(5);
 }
