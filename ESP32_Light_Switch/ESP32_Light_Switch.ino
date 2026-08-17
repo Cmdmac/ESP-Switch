@@ -1,45 +1,84 @@
 /*
-  ESP32-C2 / ESP32-C3 Smart Light Switch
-  ======================================
+  ESP32-C2 / ESP32-C3 / ESP8285 Smart Light Switch
+  =================================================
   - Wi-Fi AP mode for direct connection (no router needed)
-  - Web UI: on/off, brightness slider, ambient light display, current display
+  - Web UI: on/off, (ESP32) brightness slider, (ESP32) ambient light display, current display
   - Daily schedule: auto turn on/off at configured times
   - Persist settings to flash
 
-  Hardware (default pin mapping):
+  Supported chips (single sketch, selected by the board you pick):
+  - ESP32-C2 / ESP32-C3 : PWM dimming + ambient + current; multi ADC channels
+  - ESP8285 (ESP8266)    : on/off only (NO brightness), current only; single ADC (A0)
+
+  Hardware (ESP32 default pin mapping):
   - GPIO2 : lamp PWM output (brightness control)
   - GPIO3 : ambient light sensor (ADC)
   - GPIO4 : current sense amplifier output (ADC)
   - GPIO9 : on-board BOOT button (active LOW; separate from the lamp pin)
 
-  NOTE: No separate status LED on this board — the PWM pin drives the lamp directly.
-        The only on-board button is the BOOT button on GPIO9 (active LOW). It is
-        reused as the local button: short press toggles the lamp, long press (3s)
-        restores factory settings. It does NOT conflict with the lamp PWM on GPIO2.
+  ESP8285 default pin mapping (see the config block below):
+  - LIGHT_PWM_PIN     : lamp digital output (relay / SSR)
+  - CURRENT_ADC_PIN   : current sense (the only ADC, A0, 0~1.0V)
+  - BUTTON_PIN        : on-board BOOT/flash button (usually GPIO0 on ESP8285)
+
+  NOTE: No separate status LED on these boards — the lamp pin drives the lamp directly.
+        The BOOT button is reused as the local button: short press toggles the lamp,
+        long press (3s) restores factory settings.
 */
 
-#include <WiFi.h>
-#include <WebServer.h>
-#include <Preferences.h>
-#include <ESPmDNS.h>
-#include <Update.h>          // 网页 OTA 固件升级
+#ifdef ESP8266
+  #include <ESP8266WiFi.h>
+  #include <ESP8266WebServer.h>
+  #include <ESP8266mDNS.h>
+  #include <EEPROM.h>
+  #include <Updater.h>        // 网页 OTA 固件升级（esp8266 的 Update 类）
+#else
+  #include <WiFi.h>
+  #include <WebServer.h>
+  #include <Preferences.h>
+  #include <ESPmDNS.h>
+  #include <Update.h>         // 网页 OTA 固件升级
+#endif
 
-// ==================== 硬件引脚配置 ====================
-// 根据实际 PCB 修改以下宏。C2/C3 的 GPIO3/GPIO4 都支持 ADC。
-#define LIGHT_PWM_PIN           2     // 灯 PWM 输出（直接驱动灯，板载无独立状态 LED）
-#define STATUS_LED_PIN          (-1)  // 独立状态 LED；本板无此功能，设为 -1 禁用
-#define AMBIENT_LIGHT_ADC_PIN   3     // 光敏检测
-#define CURRENT_ADC_PIN         4     // 电流检测
-#define BUTTON_PIN              9     // 本地按键 = 板载 BOOT 键(GPIO9，低电平有效)
+// ==================== 硬件引脚配置（按芯片分两套） ====================
+// ESP32-C2/C3：多 ADC 通道，支持亮度 PWM + 环境光 + 电流
+// ESP8285    ：单 ADC（A0，0~1.0V），本设计不做亮度（无 PWM 调光）、
+//              不读环境光，仅用 A0 做电流检测；灯为开关量（数字输出）
+#ifdef ESP8266
+  // ---- ESP8285 / ESP8266 引脚（按你的 ESP8285 板实际接线修改） ----
+  #define LIGHT_PWM_PIN           12    // 灯控数字输出（继电器/SSR）。避免 strapping 脚 GPIO0/2/15
+  #define STATUS_LED_PIN          (-1)  // 无独立状态 LED
+  #define AMBIENT_LIGHT_ADC_PIN   (-1)  // ESP8285 仅 1 路 ADC，已留给电流检测，故不读环境光
+  #define CURRENT_ADC_PIN         A0    // 电流检测（唯一 ADC 通道，量程 0~1.0V）
+  #define BUTTON_PIN              0     // 板载 BOOT/下载键通常是 GPIO0（低电平有效）
+  // 功能开关
+  #define BRIGHTNESS_SUPPORTED    0     // ESP8285 不支持亮度（无 PWM 调光）
+  #define AMBIENT_SUPPORTED       0     // 不读环境光
+  #define CURRENT_SUPPORTED       1     // 保留实时电流显示
+  #define ADC_MAX                 1023  // ESP8285/ESP8266 ADC 为 10 位
+  #define ADC_VREF_MV             1000  // ESP8285/ESP8266 ADC 量程 0~1.0V（与 ESP32 的 3.3V 不同）
+#else
+  // ---- ESP32-C2/C3 引脚 ----
+  #define LIGHT_PWM_PIN           2     // 灯 PWM 输出（直接驱动灯，板载无独立状态 LED）
+  #define STATUS_LED_PIN          (-1)  // 独立状态 LED；本板无此功能，设为 -1 禁用
+  #define AMBIENT_LIGHT_ADC_PIN   3     // 光敏检测
+  #define CURRENT_ADC_PIN         4     // 电流检测
+  #define BUTTON_PIN              9     // 本地按键 = 板载 BOOT 键(GPIO9，低电平有效)
+  #define BRIGHTNESS_SUPPORTED    1
+  #define AMBIENT_SUPPORTED       1
+  #define CURRENT_SUPPORTED       1
+  #define ADC_MAX                 4095  // ESP32 ADC 12 位
+  #define ADC_VREF_MV             3300  // 使用 ADC_11db 衰减后约 0~3.3V
+#endif
 
-// 本地 BOOT 键(GPIO9) 复用为两个功能（单一按键，低电平有效，内部上拉）：
+// 本地 BOOT 键复用为两个功能（单一按键，低电平有效，内部上拉）：
 //   - 短按(松开)        -> 切换灯的开关
 //   - 长按 RESET_HOLD_MS -> 恢复出厂设置（清空灯光/定时/Wi-Fi）并重启回热点
-// 注意：GPIO9 也是 strapping 脚；上电/复位时按住会进入下载模式（正常烧录用），
-//       本逻辑仅在启动完成后运行时生效，不会与烧录冲突。
+// 注意：BOOT 键也是 strapping 脚（ESP32 为 GPIO9，ESP8285 通常为 GPIO0）；
+//       上电/复位时按住会进入下载模式，本逻辑仅在启动完成后运行时生效。
 #define RESET_HOLD_MS           3000  // 长按触发恢复出厂的时长(ms)
 
-// ==================== PWM 配置 ====================
+// ==================== PWM 配置（仅 ESP32 用） ====================
 #define PWM_FREQ        5000
 #define PWM_RESOLUTION  10            // 占空比范围 0-1023
 #define PWM_MAX_DUTY    1023
@@ -49,7 +88,9 @@
 // - U4 : INA180A1IDBVR  电流检测放大器，固定增益 20 V/V
 // - R83: 150 mΩ         高侧分流电阻（位于 VCC 与 USB 输出 VOUT 之间）
 // 公式：电流(A) = ADC 电压(V) / (分流电阻(Ω) * 放大器增益)
-// 例如：Rshunt=150mΩ=0.15Ω, Gain=20 => 1A 时输出 3.0V，满量程约 1.1A
+// ESP32  : 1A 时输出 3.0V（满量程约 1.1A，ADC 量程 3.3V 够用）
+// ESP8285: ADC 量程仅 1.0V -> 最大可测电流约 1.0/(0.15*20)=0.33A；
+//          若你的 ESP8285 板电流检测输出超过 1.0V，请加电阻分压或减小增益。
 #define SHUNT_RESISTANCE_MILLIOHM  150.0f
 #define CURRENT_SENSE_GAIN         20.0f
 
@@ -62,8 +103,12 @@
 #define WIFI_CONNECT_TIMEOUT_MS  20000  // STA 连接超时，超时后回退到热点
 
 // ==================== 全局对象 ====================
-WebServer server(80);
-Preferences prefs;
+#ifdef ESP8266
+  ESP8266WebServer server(80);
+#else
+  WebServer server(80);
+  Preferences prefs;
+#endif
 
 // 网络
 String wifiSsid = "";
@@ -93,12 +138,14 @@ uint16_t offTimeMinutes = 23 * 60;
 float currentSmoothed = 0.0f;
 const float CURRENT_ALPHA = 0.2f;
 
-// LEDC API 兼容性
-#ifndef ESP_ARDUINO_VERSION_MAJOR
-  #define ESP_ARDUINO_VERSION_MAJOR 2
-#endif
-#if ESP_ARDUINO_VERSION_MAJOR >= 3
-  #define LEDC_NEW_API
+// LEDC API 兼容性（仅 ESP32 系列使用；ESP8285 无 LEDC，亮度由数字输出实现）
+#ifndef ESP8266
+  #ifndef ESP_ARDUINO_VERSION_MAJOR
+    #define ESP_ARDUINO_VERSION_MAJOR 2
+  #endif
+  #if ESP_ARDUINO_VERSION_MAJOR >= 3
+    #define LEDC_NEW_API
+  #endif
 #endif
 
 // ==================== Web 页面 ====================
@@ -164,7 +211,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       </div>
     </div>
 
-    <div class="card">
+    <div class="card" id="card-brightness">
       <div class="row">
         <span class="label">亮度</span>
         <span class="value" id="brightnessVal">50%</span>
@@ -174,7 +221,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 
     <div class="card">
       <div class="row">
-        <div>
+        <div id="ambientWrap">
           <div class="metric-label">环境亮度</div>
           <div class="metric" id="ambient">--</div>
         </div>
@@ -318,6 +365,9 @@ async function refresh() {
     $('offTime').value = d.offTime;
     $('netMode').innerText = (d.mode === 'sta') ? '局域网' : '热点';
     $('netIp').innerText = d.ip;
+    // 按设备能力隐藏不支持的功能（ESP8285 不做亮度、不读环境光）
+    if (d.brightnessSup != 1) { const bc = $('card-brightness'); if (bc) bc.style.display = 'none'; }
+    if (d.ambientSup != 1) { const aw = $('ambientWrap'); if (aw) aw.style.display = 'none'; }
     if (!$('wifiSsid').value) $('wifiSsid').value = d.wifiSsid;
     const upH = Math.floor(d.uptime / 3600).toString().padStart(2,'0');
     const upM = Math.floor((d.uptime % 3600) / 60).toString().padStart(2,'0');
@@ -336,6 +386,20 @@ refresh();
 )rawliteral";
 
 // ==================== 辅助函数 ====================
+#ifdef ESP8266
+// ESP8285/ESP8266：灯为开关量（数字输出），无 PWM 调光
+void setupPWM() {
+  pinMode(LIGHT_PWM_PIN, OUTPUT);
+  digitalWrite(LIGHT_PWM_PIN, LOW);
+}
+
+void setLightOutput() {
+  digitalWrite(LIGHT_PWM_PIN, lightOn ? HIGH : LOW);
+  if (STATUS_LED_PIN >= 0 && STATUS_LED_PIN != LIGHT_PWM_PIN) {
+    digitalWrite(STATUS_LED_PIN, lightOn ? HIGH : LOW);
+  }
+}
+#else
 void setupPWM() {
   pinMode(LIGHT_PWM_PIN, OUTPUT);
   digitalWrite(LIGHT_PWM_PIN, LOW);
@@ -358,8 +422,9 @@ void setLightOutput() {
     digitalWrite(STATUS_LED_PIN, lightOn ? HIGH : LOW);
   }
 }
+#endif
 
-// 读取 ADC 并转成 mV，多次采样取平均
+// 读取 ADC 并转成 mV，多次采样取平均（适配 ESP32 的 12 位/3.3V 与 ESP8285 的 10 位/1.0V）
 uint32_t readVoltageMV(uint8_t pin) {
   const int samples = 16;
   long sum = 0;
@@ -367,14 +432,15 @@ uint32_t readVoltageMV(uint8_t pin) {
     sum += analogRead(pin);
   }
   uint32_t adcVal = sum / samples;
-  return (uint32_t)(adcVal * 3300UL / 4095UL);
+  return (uint32_t)(adcVal * ADC_VREF_MV / ADC_MAX);
 }
 
 uint8_t readAmbientPercent() {
+  if (AMBIENT_LIGHT_ADC_PIN < 0) return 0;   // ESP8285 不读环境光
   uint32_t mv = readVoltageMV(AMBIENT_LIGHT_ADC_PIN);
-  // 环境越亮，光敏电阻阻值越低，分压越小。0mV=100%（最亮），3300mV=0%（最暗）
-  if (mv >= 3300) return 0;
-  return (uint8_t)((3300UL - mv) * 100UL / 3300UL);
+  // 环境越亮，光敏电阻阻值越低，分压越小。0mV=100%（最亮），ADC_VREF_MV=0%（最暗）
+  if (mv >= ADC_VREF_MV) return 0;
+  return (uint8_t)((ADC_VREF_MV - mv) * 100UL / ADC_VREF_MV);
 }
 
 float readCurrentA() {
@@ -442,9 +508,13 @@ void handleButton() {
     if (reading == LOW && !longPressFired && (millis() - pressStart >= RESET_HOLD_MS)) {
       longPressFired = true;
       Serial.println("长按重置：清空所有设置并重启到热点模式...");
+#ifdef ESP8266
+      eepromClearAll();
+#else
       prefs.begin("lightSwitch", false);
       prefs.clear();
       prefs.end();
+#endif
       delay(300);
       ESP.restart();
     }
@@ -459,8 +529,51 @@ void handleButton() {
 #endif
 }
 
-// ==================== 持久化 ====================
+// ==================== ESP8285/ESP8266 EEPROM 持久化层 ====================
+// ESP8285/ESP8266 没有 Preferences 库，用 EEPROM 模拟（固定布局）。
+#ifdef ESP8266
+#include <EEPROM.h>
+#define EEPROM_SIZE 256
+typedef struct {
+  uint8_t lightOn;
+  uint8_t brightness;
+  uint8_t schedEn;
+  char onTime[6];
+  char offTime[6];
+  char wifiSsid[33];
+  char wifiPassword[65];
+} SettingsStore;
+
+static void eepromRead(SettingsStore& s) {
+  EEPROM.begin(EEPROM_SIZE);
+  EEPROM.get(0, s);
+  EEPROM.end();
+  if (s.lightOn == 0xFF) memset(&s, 0, sizeof(s));  // 全新未写过（Flash 全 0xFF）当作空
+}
+static void eepromWrite(const SettingsStore& s) {
+  EEPROM.begin(EEPROM_SIZE);
+  EEPROM.put(0, s);
+  EEPROM.commit();
+  EEPROM.end();
+}
+static void eepromClearAll() {
+  SettingsStore s;
+  memset(&s, 0, sizeof(s));
+  eepromWrite(s);
+}
+#endif
+
+
+// ==================== 持久化（EEPROM / Preferences 双实现） ====================
 void loadSettings() {
+#ifdef ESP8266
+  SettingsStore s; eepromRead(s);
+  lightOn = s.lightOn ? true : false;
+  brightnessPercent = s.brightness;          // ESP8285 未使用亮度
+  scheduleEnabled = s.schedEn ? true : false;
+  onTimeStr = String(s.onTime);
+  offTimeStr = String(s.offTime);
+#else
   prefs.begin("lightSwitch", false);
   lightOn = prefs.getBool("lightOn", false);
   brightnessPercent = prefs.getUChar("brightness", 50);
@@ -468,11 +581,21 @@ void loadSettings() {
   onTimeStr = prefs.getString("onTime", "07:00");
   offTimeStr = prefs.getString("offTime", "23:00");
   prefs.end();
+#endif
   onTimeMinutes = timeStrToMinutes(onTimeStr);
   offTimeMinutes = timeStrToMinutes(offTimeStr);
 }
 
 void saveSettings() {
+#ifdef ESP8266
+  SettingsStore s; eepromRead(s);
+  s.lightOn = lightOn ? 1 : 0;
+  s.brightness = brightnessPercent;
+  s.schedEn = scheduleEnabled ? 1 : 0;
+  strncpy(s.onTime, onTimeStr.c_str(), sizeof(s.onTime) - 1); s.onTime[5] = 0;
+  strncpy(s.offTime, offTimeStr.c_str(), sizeof(s.offTime) - 1); s.offTime[5] = 0;
+  eepromWrite(s);
+#else
   prefs.begin("lightSwitch", false);
   prefs.putBool("lightOn", lightOn);
   prefs.putUChar("brightness", brightnessPercent);
@@ -480,28 +603,49 @@ void saveSettings() {
   prefs.putString("onTime", onTimeStr);
   prefs.putString("offTime", offTimeStr);
   prefs.end();
+#endif
 }
 
 // ==================== 网络（热点 + 局域网回退） ====================
 void loadWiFi() {
+#ifdef ESP8266
+  SettingsStore s; eepromRead(s);
+  wifiSsid = String(s.wifiSsid);
+  wifiPassword = String(s.wifiPassword);
+#else
   prefs.begin("lightSwitch", false);
   wifiSsid = prefs.getString("wifiSsid", "");
   wifiPassword = prefs.getString("wifiPassword", "");
   prefs.end();
+#endif
 }
 
 void saveWiFi(const String& ssid, const String& password) {
+#ifdef ESP8266
+  SettingsStore s; eepromRead(s);
+  strncpy(s.wifiSsid, ssid.c_str(), sizeof(s.wifiSsid) - 1); s.wifiSsid[32] = 0;
+  strncpy(s.wifiPassword, password.c_str(), sizeof(s.wifiPassword) - 1); s.wifiPassword[64] = 0;
+  eepromWrite(s);
+#else
   prefs.begin("lightSwitch", false);
   prefs.putString("wifiSsid", ssid);
   prefs.putString("wifiPassword", password);
   prefs.end();
+#endif
 }
 
 void clearWiFi() {
+#ifdef ESP8266
+  SettingsStore s; eepromRead(s);
+  memset(s.wifiSsid, 0, sizeof(s.wifiSsid));
+  memset(s.wifiPassword, 0, sizeof(s.wifiPassword));
+  eepromWrite(s);
+#else
   prefs.begin("lightSwitch", false);
   prefs.remove("wifiSsid");
   prefs.remove("wifiPassword");
   prefs.end();
+#endif
 }
 
 void startMDNS() {
@@ -571,6 +715,9 @@ void handleStatus() {
   json += "\"mode\":\"" + String(staMode ? "sta" : "ap") + "\",";
   json += "\"ip\":\"" + currentIP + "\",";
   json += "\"wifiSsid\":\"" + wifiSsid + "\",";
+  json += "\"brightnessSup\":" + String(BRIGHTNESS_SUPPORTED) + ",";
+  json += "\"ambientSup\":" + String(AMBIENT_SUPPORTED) + ",";
+  json += "\"currentSup\":" + String(CURRENT_SUPPORTED) + ",";
   json += "\"uptime\":" + String(millis() / 1000UL);
   json += "}";
   server.send(200, "application/json", json);
@@ -649,9 +796,11 @@ void setup() {
   Serial.println("警告：BUTTON_PIN 与 LIGHT_PWM_PIN 冲突，本地按键已禁用。");
 #endif
 
-  // ADC 配置
+  // ADC 配置（ESP8285/ESP8266 的 ADC 固定 10 位、量程 0~1.0V，无需配置）
+#ifndef ESP8266
   analogReadResolution(12);
   analogSetAttenuation(ADC_11db);  // 支持约 0-3.3V 输入
+#endif
 
   setupPWM();
   loadSettings();

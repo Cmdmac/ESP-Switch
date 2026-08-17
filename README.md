@@ -1,6 +1,6 @@
 # ESP-Switch
 
-ESP 通断器固件，支持网页控制。基于 Arduino 框架，适用于 ESP32-C2 / ESP32-C3。
+ESP 通断器固件，支持网页控制。基于 Arduino 框架，同一份代码同时支持 **ESP32-C2 / ESP32-C3** 与 **ESP8285（ESP8266 内核）**。
 
 ## 功能
 
@@ -8,10 +8,14 @@ ESP 通断器固件，支持网页控制。基于 Arduino 框架，适用于 ESP
 - **网页控制**：开关、亮度滑条、环境亮度显示、实时电流显示
 - **定时开关**：按日循环，设置开启/关闭时间
 - **设置持久化**：亮度、开关状态、定时设置保存到 Flash
-- **本地按键**：板载 BOOT 键（GPIO9）复用为本地控制——短按切换开关、长按 3 秒恢复出厂
+- **本地按键**：板载 BOOT 键复用为本地控制——短按切换开关、长按 3 秒恢复出厂
 - **网页 OTA 升级**：在网页选择 `.bin` 固件即可无线升级，无需 USB 烧录
 
+> **芯片能力差异**：ESP32-C2/C3 支持全部功能（PWM 调光 + 环境光 + 电流）。ESP8285 只有 **1 路 ADC**（量程 0~1.0V），因此本设计对其**不做亮度调光、不读环境光**，灯为开关量输出，仅保留 A0 的实时电流显示。网页会自动按设备能力隐藏「亮度」与「环境亮度」。
+
 ## 硬件默认引脚映射
+
+### ESP32-C2 / ESP32-C3
 
 | 功能 | 引脚 | 说明 |
 |------|------|------|
@@ -22,10 +26,23 @@ ESP 通断器固件，支持网页控制。基于 Arduino 框架，适用于 ESP
 
 > **注意**：本板没有独立状态 LED，GPIO2 直接驱动灯（PWM 亮度控制）。板载 **BOOT 键在 GPIO9**，与灯 PWM(GPIO2) 不冲突，且是本板唯一的物理按键。如果实际灯控 MOSFET 接在别的 GPIO，请修改 `ESP32_Light_Switch.ino` 顶部的 `LIGHT_PWM_PIN`。
 
+### ESP8285（ESP8266 内核）
+
+| 功能 | 引脚 | 说明 |
+|------|------|------|
+| 灯输出（开关量） | GPIO12 | 数字输出驱动继电器/SSR（默认；请避开 strapping 脚 GPIO0/2/15） |
+| 电流检测 | A0 | 唯一 ADC 通道，量程 0~1.0V |
+| BOOT/下载键 | GPIO0 | 板载 BOOT 键，低电平有效；复用为本地控制与恢复出厂 |
+
+> **注意**：ESP8285 上这些引脚是**默认值**，请按你实际 ESP8285 板子的接线修改 `.ino` 顶部 `ESP8266` 分支里的宏。GPIO0 是下载/strapping 脚，**上电/复位时按住会进入下载模式**（正常烧录用），长按恢复出厂逻辑只在启动完成后运行时生效。
+
 ## 开发环境
 
 - [Arduino IDE](https://www.arduino.cc/en/software) 或 [PlatformIO](https://platformio.org/)
-- ESP32 Arduino Core（建议 2.0.14+ 或 3.x）
+- ESP32 芯片：ESP32 Arduino Core（建议 2.0.14+ 或 3.x）
+- ESP8285 芯片：ESP8266 Arduino Core（`esp8266 by ESP8266 Community`）
+
+> 同一份 `ESP32_Light_Switch.ino` 通过 `#ifdef ESP8266` 同时适配两套核心：选 ESP32 开发板时用 ESP32 核心，选 ESP8285 开发板时用 ESP8266 核心，无需切换文件。
 
 ### 安装 ESP32 开发板包
 
@@ -37,20 +54,31 @@ ESP 通断器固件，支持网页控制。基于 Arduino 框架，适用于 ESP
    ```
 2. 工具 → 开发板 → 开发板管理器，搜索并安装 **ESP32 by Espressif Systems**
 
+### 安装 ESP8266 开发板包（ESP8285 用）
+
+1. 文件 → 首选项 → 附加开发板管理器网址，追加（与上面用逗号分隔）：
+   ```
+   https://arduino.esp8266.com/stable/package_esp8266com_index.json
+   ```
+2. 工具 → 开发板 → 开发板管理器，搜索并安装 **esp8266 by ESP8266 Community**
+
 ### 选择开发板
 
-#### ESP32-C2
+#### ESP32-C2 / ESP32-C3
 
-- 开发板：**ESP32C2 Dev Module**（或 **ESP32-C2-DevKitM-1**）
-- Partition Scheme：默认即可
+- 开发板：**ESP32C2 Dev Module** / **ESP32C3 Dev Module**（或对应 DevKitM-1）
+- Partition Scheme：默认即可（C3/C2 多为 4MB Flash）
 - Upload Speed：921600
 
-#### ESP32-C3
+#### ESP8285
 
-- 开发板：**ESP32C3 Dev Module**（或 **ESP32-C3-DevKitM-1**）
-- 其余同上
+- 开发板：**Generic ESP8285 Module**（ESP8266 核心）
+- Flash Size：**1M (128K SPIFFS)** 或带 OTA 的方案（见下方 OTA 说明）
+- Flash Mode：**DOUT**（ESP8285 内置 Flash 必须以 DOUT 模式烧录，否则下载后无法启动）
+- Upload Speed：921600
+- CPU Frequency：80 MHz 或 160 MHz 均可
 
-本代码使用通用 GPIO/ADC/PWM API，C2 和 C3 均可直接编译。
+本代码使用通用 GPIO/ADC/PWM API，C2 和 C3 均可直接编译；ESP8285 走 ESP8266 分支（无 LEDC、用 EEPROM 持久化、单 ADC）。
 
 ## 上传步骤
 
@@ -97,21 +125,21 @@ ESP 通断器固件，支持网页控制。基于 Arduino 框架，适用于 ESP
 
 OTA 需要 Flash 上有至少两个 App 分区（factory / ota_0 / ota_1）。请在 Arduino IDE 中：
 
-- 工具 → Partition Scheme → 选择带 OTA 的方案，例如：
-  - **ESP32-C3**：`Default 4MB with spiffs`（含 OTA 双分区）
-  - **ESP32-C2**：同样选择带 OTA 的 4MB 方案（C2 多为 4MB Flash）
-- 若选了「Minimal / No OTA」类方案，`Update.begin()` 会因空间不足而失败。
+- **ESP32-C3 / C2**：工具 → Partition Scheme → 选择带 OTA 的方案，例如 `Default 4MB with spiffs`（含 OTA 双分区）。若选了「Minimal / No OTA」类方案，`Update.begin()` 会因空间不足而失败。
+- **ESP8285（1MB Flash）**：OTA 空间很紧张。选 `Flash Size: 1M (128K SPIFFS)` 时通常**不带** OTA 分区；需选带 OTA 的 1MB 方案（如 `1M (512K+512K OTA)` 之类，具体取决于板包菜单）。1MB 下固件+网页字符串+Wi-Fi 栈已偏满，OTA 可能无法容纳较大固件；若 OTA 失败，请改用 USB 串口烧录。
 
 > 安全提示：OTA 接口当前无任何鉴权，仅适合在受信任的局域网/热点下使用。若设备暴露在公网，请自行增加认证。
 
-## 本地 BOOT 键（GPIO9）用法
+## 本地 BOOT 键用法
 
 本板只有这一个物理按键，已复用为本地控制：
 
 - **短按**（松开）：切换灯的开关。
-- **长按 3 秒**（`RESET_HOLD_MS`，可在 `.ino` 顶部修改）：恢复出厂设置，清空 `lightSwitch` 命名空间下的所有设置（灯光状态、亮度、定时、Wi-Fi 凭证），并重启回到热点模式，等待重新配网。
+- **长按 3 秒**（`RESET_HOLD_MS`，可在 `.ino` 顶部修改）：恢复出厂设置，清空所有设置（灯光状态、定时、Wi-Fi 凭证），并重启回到热点模式，等待重新配网。
 
-> 说明：板载 BOOT 键在 **GPIO9**，与灯 PWM(GPIO2) 不冲突，无需额外接线。`BUTTON_PIN` 已设为 `9`、`RESET_HOLD_MS` 为 `3000`。注意 GPIO9 也是 strapping 脚，**上电/复位时按住会进入下载模式**（正常烧录用），此长按恢复出厂逻辑仅在启动完成后运行时生效，不会与烧录冲突。
+> **ESP32-C2/C3**：BOOT 键在 **GPIO9**，与灯 PWM(GPIO2) 不冲突。注意 GPIO9 也是 strapping 脚，**上电/复位时按住会进入下载模式**（正常烧录用），此长按恢复出厂逻辑仅在启动完成后运行时生效，不会与烧录冲突。
+>
+> **ESP8285**：板载 BOOT/下载键通常是 **GPIO0**（ESP8266 的下载脚）。上电/复位时按住 GPIO0 进入下载模式，长按恢复出厂逻辑同样只在启动完成后运行时生效。默认的 `BUTTON_PIN` 在 ESP8266 分支里已设为 `0`。
 
 ## 电流检测校准
 
@@ -134,6 +162,8 @@ OTA 需要 Flash 上有至少两个 App 分区（factory / ota_0 / ota_1）。�
 ```
 
 此时 1A 负载电流对应放大器输出约 3.0V（`1 × 0.15 × 20 = 3.0`），ESP32 ADC 满量程约 1.1A。
+
+> **ESP8285 注意**：其 ADC 量程仅 **0~1.0V**（10 位），而 1A 时放大器输出已达 3.0V，会超出量程被削顶。ESP8285 上最大可测电流约 `1.0 / (0.15 × 20) ≈ 0.33A`。若你的 ESP8285 板电流检测输出超过 1.0V，请在放大器输出端加电阻分压，或减小分流电阻/增益，使满量程落在 1.0V 以内，并保持 `SHUNT_RESISTANCE_MILLIOHM` 与 `CURRENT_SENSE_GAIN` 与实际电路一致。
 
 如果你的板子使用了不同的分流电阻或放大器型号，请按实际参数修改上述两个宏。
 
@@ -162,8 +192,8 @@ A：检查波特率是否为 115200，开发板是否选错（C2 选成 C3 会�
 **Q：网页打不开**
 A：确认手机已连接 `ESP-Light-Switch`，并输入 `http://192.168.4.1`（不是 https）。
 
-**Q：亮度调节无效**
-A：确认 `LIGHT_PWM_PIN` 与实际灯控 MOS/LED 引脚一致。板载 BOOT 键在 GPIO9，与灯 PWM(GPIO2) 不冲突。
+**Q：亮度调节无效 / 网页没有亮度滑条**
+A：ESP32-C2/C3 请确认 `LIGHT_PWM_PIN` 与实际灯控引脚一致。ESP8285 本身**不支持亮度**（无 PWM 调光，灯为开关量），网页会自动隐藏亮度卡片，属正常现象。
 
 **Q：电流显示不准**
 A：根据实际分流电阻和放大器增益修改校准常量，必要时用万用表对比校准。

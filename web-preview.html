@@ -46,8 +46,16 @@
   <div class="subtitle">ESP Light Switch · 本地预览</div>
 
   <div class="banner" id="banner">
-    <span>预览模式：使用模拟数据，未连接 ESP32。</span>
-    <button type="button" onclick="enableDeviceMode()">连接真实设备</button>
+    <span>预览模式：使用模拟数据。</span>
+    <span>
+      <label style="font-size:0.8rem;">模拟设备
+        <select id="devType" onchange="setDevType()" style="font-size:0.8rem;padding:3px;border-radius:6px;border:1px solid #ffd591;">
+          <option value="esp32">ESP32-C2/C3</option>
+          <option value="esp8285">ESP8285</option>
+        </select>
+      </label>
+      <button type="button" onclick="enableDeviceMode()">连接真实设备</button>
+    </span>
   </div>
 
   <div class="tabs">
@@ -67,7 +75,7 @@
       </div>
     </div>
 
-    <div class="card">
+    <div class="card" id="card-brightness">
       <div class="row">
         <span class="label">亮度</span>
         <span class="value" id="brightnessVal">50%</span>
@@ -77,7 +85,7 @@
 
     <div class="card">
       <div class="row">
-        <div>
+        <div id="ambientWrap">
           <div class="metric-label">环境亮度</div>
           <div class="metric" id="ambient">--</div>
         </div>
@@ -158,6 +166,7 @@ const state = {
   scheduleEnabled: false, onTime: '07:00', offTime: '23:00',
   mode: 'ap', ip: '192.168.4.1', wifiSsid: 'ESP-Light-Switch'
 };
+let DEVICE_TYPE = 'esp32';   // 预览时模拟的芯片：esp32（全功能）或 esp8285（无亮度/无环境光）
 
 function updateBrightnessLabel() { $('brightnessVal').innerText = $('brightness').value + '%'; }
 function switchTab(name) {
@@ -185,6 +194,9 @@ function mockStatus() {
     ambient: Math.round(state.ambient), current: +state.current.toFixed(3),
     scheduleEnabled: state.scheduleEnabled, onTime: state.onTime, offTime: state.offTime,
     mode: state.mode, ip: state.ip, wifiSsid: state.wifiSsid,
+    brightnessSup: DEVICE_TYPE === 'esp32' ? 1 : 0,
+    ambientSup: DEVICE_TYPE === 'esp32' ? 1 : 0,
+    currentSup: 1,
     uptime: Math.floor((Date.now() - startMs) / 1000)
   }));
 }
@@ -277,6 +289,12 @@ async function uploadFirmware() {
   }
 }
 
+// ===== 切换预览模拟的芯片类型 =====
+function setDevType() {
+  DEVICE_TYPE = $('devType').value;
+  refresh();
+}
+
 // ===== 连接真实设备 =====
 function enableDeviceMode() {
   const ip = prompt('输入 ESP32 的 IP 地址（热点默认 192.168.4.1）：', '192.168.4.1');
@@ -302,6 +320,9 @@ async function refresh() {
     $('offTime').value = d.offTime;
     $('netMode').innerText = (d.mode === 'sta') ? '局域网' : '热点';
     $('netIp').innerText = d.ip;
+    // 按设备能力隐藏不支持的功能（ESP8285 不做亮度、不读环境光）
+    $('card-brightness').style.display = (d.brightnessSup == 1) ? '' : 'none';
+    $('ambientWrap').style.display = (d.ambientSup == 1) ? '' : 'none';
     if (!$('wifiSsid').value) $('wifiSsid').value = d.wifiSsid;
     const upH = Math.floor(d.uptime / 3600).toString().padStart(2,'0');
     const upM = Math.floor((d.uptime % 3600) / 60).toString().padStart(2,'0');
