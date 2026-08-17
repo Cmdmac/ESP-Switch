@@ -257,7 +257,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         <span class="label">亮度</span>
         <span class="value" id="brightnessVal">90%</span>
       </div>
-      <input type="range" id="brightness" min="0" max="100" value="90" oninput="updateBrightnessLabel()" onchange="setBrightness()">
+      <input type="range" id="brightness" min="1" max="100" value="100" oninput="updateBrightnessLabel()" onchange="setBrightness()">
     </div>
 
     <div class="card">
@@ -642,7 +642,11 @@ static void eepromRead(SettingsStore& s) {
   EEPROM.end();
   if (s.lightOn == 0xFF) {        // 全新未写过（Flash 全 0xFF）当作空，但写入合理默认
     memset(&s, 0, sizeof(s));
-    s.brightness = 90;            // 默认 90%，避免 PWM 占空比为 0 导致灯不亮、开关失灵
+    s.brightness = 100;           // 默认 100%，避免 PWM 占空比为 0 导致灯不亮、开关失灵
+  } else {
+    // 亮度 0 视为无效（旧固件残留 / 未初始化），纠正为默认 100%，
+    // 否则会出现「开关关着正常、但开灯后灯不亮」；用户主动设的 1~100 保留。
+    if (s.brightness == 0 || s.brightness > 100) s.brightness = 100;
   }
 }
 static void eepromWrite(const SettingsStore& s) {
@@ -653,7 +657,8 @@ static void eepromWrite(const SettingsStore& s) {
 }
 static void eepromClearAll() {
   SettingsStore s;
-  memset(&s, 0, sizeof(s));
+  memset(&s, 0, sizeof(s));       // 基线：全部清零（灯关、无 WiFi、无定时）
+  s.brightness = 100;             // 恢复出厂亮度默认 100%，避免重启后占空比为 0 灯不亮
   eepromWrite(s);
 }
 #endif
@@ -671,7 +676,7 @@ void loadSettings() {
 #else
   prefs.begin("lightSwitch", false);
   lightOn = prefs.getBool("lightOn", false);
-  brightnessPercent = prefs.getUChar("brightness", 50);
+  brightnessPercent = prefs.getUChar("brightness", 100);
   scheduleEnabled = prefs.getBool("schedEn", false);
   onTimeStr = prefs.getString("onTime", "07:00");
   offTimeStr = prefs.getString("offTime", "23:00");
@@ -853,7 +858,7 @@ void handlePower() {
 
 void handleBrightness() {
   int val = server.arg("value").toInt();
-  brightnessPercent = (uint8_t)constrain(val, 0, 100);
+  brightnessPercent = (uint8_t)constrain(val, 1, 100);   // 亮度最低 1%，0 视为关灯由开关控制，避免开灯不亮
   setLightOutput();
   server.send(200, "text/plain", "OK");
 }
