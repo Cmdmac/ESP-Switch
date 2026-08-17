@@ -19,10 +19,11 @@ ESP 通断器固件，支持网页控制。基于 Arduino 框架，适用于 ESP
 | 灯 PWM 输出 | GPIO2 | 亮度控制输出，直接驱动灯（本板无独立状态 LED） |
 | 环境光检测 | GPIO3 | 光敏电阻/光敏二极管 ADC |
 | 电流检测 | GPIO4 | 电流检测放大器输出 ADC |
-| 本地按键 | 未启用 | 原理图上 GPIO2 同时接了 BOOT 键，冲突时默认禁用 |
+| BOOT 键 | GPIO9 | 板载按键，低电平有效（用于下载/复位，与灯 PWM 不冲突） |
+| 本地按键 | 未启用 | 外接按键可选；板载 BOOT 键在 GPIO9，与灯 PWM(GPIO2) 不冲突 |
 | 长按重置键 | 未启用 | 外接对地按键，长按 3 秒恢复出厂（清空所有设置并回热点） |
 
-> **注意**：本板没有独立状态 LED，GPIO2 直接驱动灯（PWM 亮度控制），同时该引脚也接了 BOOT 按键。如果实际灯控 MOSFET 接在别的 GPIO，请修改 `ESP32_Light_Switch.ino` 顶部的 `LIGHT_PWM_PIN`。
+> **注意**：本板没有独立状态 LED，GPIO2 直接驱动灯（PWM 亮度控制）。板载 BOOT 键在 **GPIO9**，与灯 PWM(GPIO2) 不冲突。如果实际灯控 MOSFET 接在别的 GPIO，请修改 `ESP32_Light_Switch.ino` 顶部的 `LIGHT_PWM_PIN`。
 
 ## 开发环境
 
@@ -114,7 +115,7 @@ OTA 需要 Flash 上有至少两个 App 分区（factory / ota_0 / ota_1）。�
 - 按键一端接地、另一端接该 GPIO（启用内部上拉，按下为 LOW）。
 - **持续按住 3 秒**（`RESET_HOLD_MS`，可在顶部修改）后，设备会清空 `lightSwitch` 命名空间下的所有设置（灯光状态、亮度、定时、Wi-Fi 凭证），并重启回到热点模式，等待重新配网。
 
-> 接线注意：原理图上 GPIO2 同时驱动 PWM 输出与 BOOT 键，二者冲突，**请勿将 `RESET_BUTTON_PIN` 设为 2**。请接到空闲 GPIO（如 GPIO5/6/7/8/9/10，需避开 GPIO3 光敏、GPIO4 电流检测）。也可把 `LIGHT_PWM_PIN` 改到其它 GPIO 后再复用原 BOOT 键所在的 GPIO2。
+> 接线注意：板载 BOOT 键在 **GPIO9**，与灯 PWM(GPIO2) 不冲突。请勿将 `RESET_BUTTON_PIN` 设为 **2**（那是灯 PWM 输出）。可接到空闲 GPIO（如 GPIO5/6/7/8/10，需避开 GPIO3 光敏、GPIO4 电流检测）；也可复用板载 GPIO9 BOOT 键（注意 GPIO9 也是 strapping 脚，长按可能触发下载模式）。
 
 ## 电流检测校准
 
@@ -166,7 +167,7 @@ A：检查波特率是否为 115200，开发板是否选错（C2 选成 C3 会�
 A：确认手机已连接 `ESP-Light-Switch`，并输入 `http://192.168.4.1`（不是 https）。
 
 **Q：亮度调节无效**
-A：确认 `LIGHT_PWM_PIN` 与实际灯控 MOS/LED 引脚一致。若 GPIO2 接了 BOOT 按键，请改用其它 GPIO。
+A：确认 `LIGHT_PWM_PIN` 与实际灯控 MOS/LED 引脚一致。板载 BOOT 键在 GPIO9，与灯 PWM(GPIO2) 不冲突。
 
 **Q：电流显示不准**
 A：根据实际分流电阻和放大器增益修改校准常量，必要时用万用表对比校准。

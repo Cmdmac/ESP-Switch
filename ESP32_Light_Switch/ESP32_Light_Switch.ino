@@ -10,10 +10,11 @@
   - GPIO2 : lamp PWM output (brightness control)
   - GPIO3 : ambient light sensor (ADC)
   - GPIO4 : current sense amplifier output (ADC)
+  - GPIO9 : on-board BOOT button (active LOW; separate from the lamp pin)
 
   NOTE: No separate status LED on this board — the PWM pin drives the lamp directly.
-        Your schematic shows GPIO2 also connected to the BOOT button.
-        If you want to use the button, set LIGHT_PWM_PIN to a different GPIO.
+        The BOOT button is on GPIO9 (NOT GPIO2). If you wire a local control button,
+        use a free GPIO; never put RESET_BUTTON_PIN on GPIO2 (it drives the lamp).
 */
 
 #include <WiFi.h>
@@ -32,8 +33,10 @@
 
 // 长按重置（恢复出厂）按键：接一个对地按键（内部上拉，按下为 LOW）
 // 持续按住 RESET_HOLD_MS 毫秒后，清空所有设置并重启回热点模式
-// 注意：GPIO2 同时驱动 PWM 与 BOOT 键，冲突，请勿将 RESET_BUTTON_PIN 设为 2；
-//       请接到空闲 GPIO（如 GPIO5/6/7/8/9/10，需避开已被占用的引脚）。
+// 注意：板载 BOOT 键在 GPIO9，与灯 PWM(GPIO2) 不冲突。
+//       请勿将 RESET_BUTTON_PIN 设为 GPIO2（那是灯 PWM 输出）。
+//       可接空闲 GPIO（如 GPIO5/6/7/8/10），或复用板载 GPIO9 BOOT 键
+//       （注意 GPIO9 也是 strapping 脚，长按可能触发下载模式）。
 #define RESET_BUTTON_PIN        (-1)  // 默认禁用；启用时改为对应 GPIO
 #define RESET_HOLD_MS           3000  // 长按触发时长(ms)
 
