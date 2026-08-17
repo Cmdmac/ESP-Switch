@@ -13,8 +13,9 @@
   - GPIO9 : on-board BOOT button (active LOW; separate from the lamp pin)
 
   NOTE: No separate status LED on this board — the PWM pin drives the lamp directly.
-        The BOOT button is on GPIO9 (NOT GPIO2). If you wire a local control button,
-        use a free GPIO; never put RESET_BUTTON_PIN on GPIO2 (it drives the lamp).
+        The only on-board button is the BOOT button on GPIO9 (active LOW). It is
+        reused as the local button: short press toggles the lamp, long press (3s)
+        restores factory settings. It does NOT conflict with the lamp PWM on GPIO2.
 */
 
 #include <WiFi.h>
@@ -29,16 +30,14 @@
 #define STATUS_LED_PIN          (-1)  // 独立状态 LED；本板无此功能，设为 -1 禁用
 #define AMBIENT_LIGHT_ADC_PIN   3     // 光敏检测
 #define CURRENT_ADC_PIN         4     // 电流检测
-#define BUTTON_PIN              (-1)  // 本地按键引脚；若与 LIGHT_PWM_PIN 冲突请设为 -1
+#define BUTTON_PIN              9     // 本地按键 = 板载 BOOT 键(GPIO9，低电平有效)
 
-// 长按重置（恢复出厂）按键：接一个对地按键（内部上拉，按下为 LOW）
-// 持续按住 RESET_HOLD_MS 毫秒后，清空所有设置并重启回热点模式
-// 注意：板载 BOOT 键在 GPIO9，与灯 PWM(GPIO2) 不冲突。
-//       请勿将 RESET_BUTTON_PIN 设为 GPIO2（那是灯 PWM 输出）。
-//       可接空闲 GPIO（如 GPIO5/6/7/8/10），或复用板载 GPIO9 BOOT 键
-//       （注意 GPIO9 也是 strapping 脚，长按可能触发下载模式）。
-#define RESET_BUTTON_PIN        (-1)  // 默认禁用；启用时改为对应 GPIO
-#define RESET_HOLD_MS           3000  // 长按触发时长(ms)
+// 本地 BOOT 键(GPIO9) 复用为两个功能（单一按键，低电平有效，内部上拉）：
+//   - 短按(松开)        -> 切换灯的开关
+//   - 长按 RESET_HOLD_MS -> 恢复出厂设置（清空灯光/定时/Wi-Fi）并重启回热点
+// 注意：GPIO9 也是 strapping 脚；上电/复位时按住会进入下载模式（正常烧录用），
+//       本逻辑仅在启动完成后运行时生效，不会与烧录冲突。
+#define RESET_HOLD_MS           3000  // 长按触发恢复出厂的时长(ms)
 
 // ==================== PWM 配置 ====================
 #define PWM_FREQ        5000
@@ -79,16 +78,12 @@ bool scheduleEnabled = false;
 String onTimeStr = "07:00";
 String offTimeStr = "23:00";
 
-// 本地按键
+// 本地按键（= 板载 BOOT 键 GPIO9）
 bool lastButtonState = HIGH;
 unsigned long lastDebounce = 0;
 const unsigned long DEBOUNCE_MS = 50;
-
-// 长按重置按键
-#if RESET_BUTTON_PIN > 0
-bool resetBtnHeld = false;
-unsigned long resetHoldStart = 0;
-#endif
+unsigned long pressStart = 0;     // 本次按下的起始时间
+bool longPressFired = false;      // 长按重置是否已触发
 
 // 定时器
 uint16_t onTimeMinutes = 7 * 60;
@@ -427,34 +422,25 @@ void applySchedule() {
   }
 }
 
+// 板载 BOOT 键(GPIO9) 复用为单一按键：
+//   - 短按(松开)        -> 切换灯的开关
+//   - 长按 RESET_HOLD_MS -> 恢复出厂设置（清空灯光/定时/Wi-Fi）并重启回热点
 void handleButton() {
 #if BUTTON_PIN != LIGHT_PWM_PIN
   if (BUTTON_PIN < 0) return;
-  bool reading = digitalRead(BUTTON_PIN);
+  bool reading = digitalRead(BUTTON_PIN);  // BOOT 键低电平有效
   if (reading != lastButtonState) {
     lastDebounce = millis();
   }
   if ((millis() - lastDebounce) > DEBOUNCE_MS) {
+    // 按下瞬间：记录起始时间
     if (reading == LOW && lastButtonState == HIGH) {
-      lightOn = !lightOn;
-      setLightOutput();
+      pressStart = millis();
+      longPressFired = false;
     }
-  }
-  lastButtonState = reading;
-#endif
-}
-
-// 长按重置（恢复出厂）：持续按住 RESET_BUTTON_PIN 达 RESET_HOLD_MS 后，
-// 清空 lightSwitch 命名空间下所有设置（灯光、定时、Wi-Fi 凭证），重启回到热点模式。
-void handleResetButton() {
-#if RESET_BUTTON_PIN > 0
-  bool pressed = (digitalRead(RESET_BUTTON_PIN) == LOW);  // 对地按键，按下为 LOW
-  if (pressed) {
-    if (!resetBtnHeld) {
-      resetBtnHeld = true;
-      resetHoldStart = millis();
-      Serial.println("检测到重置按键，保持按住以恢复出厂设置...");
-    } else if (millis() - resetHoldStart >= RESET_HOLD_MS) {
+    // 持续按住达到时长：恢复出厂
+    if (reading == LOW && !longPressFired && (millis() - pressStart >= RESET_HOLD_MS)) {
+      longPressFired = true;
       Serial.println("长按重置：清空所有设置并重启到热点模式...");
       prefs.begin("lightSwitch", false);
       prefs.clear();
@@ -462,9 +448,14 @@ void handleResetButton() {
       delay(300);
       ESP.restart();
     }
-  } else {
-    resetBtnHeld = false;
+    // 松开瞬间（且未触发长按）：短按切换灯开关
+    if (reading == HIGH && lastButtonState == LOW && !longPressFired) {
+      lightOn = !lightOn;
+      setLightOutput();
+      Serial.println(lightOn ? "短按：开灯" : "短按：关灯");
+    }
   }
+  lastButtonState = reading;
 #endif
 }
 
@@ -652,14 +643,10 @@ void setup() {
 #if BUTTON_PIN != LIGHT_PWM_PIN
   if (BUTTON_PIN >= 0) {
     pinMode(BUTTON_PIN, INPUT_PULLUP);
+    Serial.println("本地 BOOT 键已启用(GPIO" + String(BUTTON_PIN) + ")：短按开关灯，长按 " + String(RESET_HOLD_MS) + "ms 恢复出厂。");
   }
 #else
   Serial.println("警告：BUTTON_PIN 与 LIGHT_PWM_PIN 冲突，本地按键已禁用。");
-#endif
-
-#if RESET_BUTTON_PIN > 0
-  pinMode(RESET_BUTTON_PIN, INPUT_PULLUP);
-  Serial.println("长按重置按键已启用 (GPIO" + String(RESET_BUTTON_PIN) + ")。");
 #endif
 
   // ADC 配置
@@ -724,6 +711,5 @@ void loop() {
   server.handleClient();
   applySchedule();
   handleButton();
-  handleResetButton();
   delay(5);
 }
