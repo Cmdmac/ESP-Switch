@@ -20,6 +20,7 @@
 #include <WebServer.h>
 #include <Preferences.h>
 #include <ESPmDNS.h>
+#include <Update.h>          // 网页 OTA 固件升级
 
 // ==================== 硬件引脚配置 ====================
 // 根据实际 PCB 修改以下宏。C2/C3 的 GPIO3/GPIO4 都支持 ADC。
@@ -136,6 +137,11 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
   button { width: 100%; padding: 14px; border: none; border-radius: 12px; background: var(--primary); color: white; font-size: 1rem; cursor: pointer; transition: opacity .2s; }
   button:active { opacity: 0.85; }
   .note { font-size: 0.75rem; color: #999; margin-top: 10px; text-align: center; }
+  .tabs { display: flex; border-bottom: 2px solid #e6e6e6; margin-bottom: 18px; }
+  .tab { flex: 1; text-align: center; padding: 12px 4px 11px; color: #999; font-size: 0.95rem; cursor: pointer; border-bottom: 3px solid transparent; margin-bottom: -2px; transition: color .2s, border-color .2s; user-select: none; }
+  .tab.active { color: var(--primary); font-weight: 600; border-bottom-color: var(--primary); }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
 </style>
 </head>
 <body>
@@ -143,83 +149,110 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
   <h1>智能灯控</h1>
   <div class="subtitle">ESP Light Switch</div>
 
-  <div class="card">
-    <div class="row">
-      <span class="label">电源开关</span>
-      <label class="switch">
-        <input type="checkbox" id="power" onchange="setPower()">
-        <span class="slider"></span>
-      </label>
-    </div>
+  <div class="tabs">
+    <div class="tab active" id="tabBtn-control" onclick="switchTab('control')">控制</div>
+    <div class="tab" id="tabBtn-network" onclick="switchTab('network')">网络</div>
+    <div class="tab" id="tabBtn-ota" onclick="switchTab('ota')">升级</div>
   </div>
 
-  <div class="card">
-    <div class="row">
-      <span class="label">亮度</span>
-      <span class="value" id="brightnessVal">50%</span>
-    </div>
-    <input type="range" id="brightness" min="0" max="100" value="50" oninput="updateBrightnessLabel()" onchange="setBrightness()">
-  </div>
-
-  <div class="card">
-    <div class="row">
-      <div>
-        <div class="metric-label">环境亮度</div>
-        <div class="metric" id="ambient">--</div>
-      </div>
-      <div style="text-align:right;">
-        <div class="metric-label">实时电流</div>
-        <div class="metric" id="current">--</div>
+  <div class="tab-content active" id="tab-control">
+    <div class="card">
+      <div class="row">
+        <span class="label">电源开关</span>
+        <label class="switch">
+          <input type="checkbox" id="power" onchange="setPower()">
+          <span class="slider"></span>
+        </label>
       </div>
     </div>
+
+    <div class="card">
+      <div class="row">
+        <span class="label">亮度</span>
+        <span class="value" id="brightnessVal">50%</span>
+      </div>
+      <input type="range" id="brightness" min="0" max="100" value="50" oninput="updateBrightnessLabel()" onchange="setBrightness()">
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <div>
+          <div class="metric-label">环境亮度</div>
+          <div class="metric" id="ambient">--</div>
+        </div>
+        <div style="text-align:right;">
+          <div class="metric-label">实时电流</div>
+          <div class="metric" id="current">--</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <span class="label">定时开关</span>
+        <label class="switch">
+          <input type="checkbox" id="scheduleEn" onchange="saveSchedule()">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="row">
+        <span class="label">开启时间</span>
+        <input type="time" id="onTime" onchange="saveSchedule()">
+      </div>
+      <div class="row">
+        <span class="label">关闭时间</span>
+        <input type="time" id="offTime" onchange="saveSchedule()">
+      </div>
+    </div>
+
+    <button onclick="saveSettings()">保存灯光设置到 Flash</button>
   </div>
 
-  <div class="card">
-    <div class="row">
-      <span class="label">定时开关</span>
-      <label class="switch">
-        <input type="checkbox" id="scheduleEn" onchange="saveSchedule()">
-        <span class="slider"></span>
-      </label>
-    </div>
-    <div class="row">
-      <span class="label">开启时间</span>
-      <input type="time" id="onTime" onchange="saveSchedule()">
-    </div>
-    <div class="row">
-      <span class="label">关闭时间</span>
-      <input type="time" id="offTime" onchange="saveSchedule()">
+  <div class="tab-content" id="tab-network">
+    <div class="card">
+      <div class="row">
+        <span class="label">网络模式</span>
+        <span class="value" id="netMode">--</span>
+      </div>
+      <div class="row">
+        <span class="label">当前地址</span>
+        <span class="value" id="netIp">--</span>
+      </div>
+      <div class="row">
+        <span class="label">Wi-Fi 名称</span>
+        <input type="text" id="wifiSsid" placeholder="SSID" style="border:1px solid #ddd;border-radius:8px;padding:6px;font-size:1rem;width:55%;">
+      </div>
+      <div class="row">
+        <span class="label">密码</span>
+        <input type="password" id="wifiPassword" placeholder="留空不修改" style="border:1px solid #ddd;border-radius:8px;padding:6px;font-size:1rem;width:55%;">
+      </div>
+      <button type="button" onclick="saveWiFi()">保存并连接 Wi-Fi</button>
+      <div class="note"><a href="#" onclick="forgetWiFi();return false;" style="color:#888;">忘记 Wi-Fi，恢复热点模式</a></div>
     </div>
   </div>
 
-  <div class="card">
-    <div class="row">
-      <span class="label">网络模式</span>
-      <span class="value" id="netMode">--</span>
+  <div class="tab-content" id="tab-ota">
+    <div class="card">
+      <div class="label" style="margin-bottom:10px;">固件升级（OTA）</div>
+      <input type="file" id="firmware" accept=".bin" style="width:100%;font-size:0.9rem;margin-bottom:10px;">
+      <button type="button" onclick="uploadFirmware()">选择 .bin 并升级</button>
+      <div class="note" id="updateStatus"></div>
     </div>
-    <div class="row">
-      <span class="label">当前地址</span>
-      <span class="value" id="netIp">--</span>
-    </div>
-    <div class="row">
-      <span class="label">Wi-Fi 名称</span>
-      <input type="text" id="wifiSsid" placeholder="SSID" style="border:1px solid #ddd;border-radius:8px;padding:6px;font-size:1rem;width:55%;">
-    </div>
-    <div class="row">
-      <span class="label">密码</span>
-      <input type="password" id="wifiPassword" placeholder="留空不修改" style="border:1px solid #ddd;border-radius:8px;padding:6px;font-size:1rem;width:55%;">
-    </div>
-    <button type="button" onclick="saveWiFi()">保存并连接 Wi-Fi</button>
-    <div class="note"><a href="#" onclick="forgetWiFi();return false;" style="color:#888;">忘记 Wi-Fi，恢复热点模式</a></div>
   </div>
 
-  <button onclick="saveSettings()">保存灯光设置到 Flash</button>
   <div class="note" id="status">正在连接设备...</div>
 </div>
 
 <script>
 const $ = id => document.getElementById(id);
 function updateBrightnessLabel() { $('brightnessVal').innerText = $('brightness').value + '%'; }
+function switchTab(name) {
+  ['control','network','ota'].forEach(t => {
+    $('tab-' + t).classList.toggle('active', t === name);
+    $('tabBtn-' + t).classList.toggle('active', t === name);
+  });
+  window.scrollTo(0, 0);
+}
 
 async function setPower() {
   await fetch('/api/power?state=' + ($('power').checked ? 'on' : 'off'), {method:'POST'});
@@ -256,6 +289,21 @@ async function forgetWiFi() {
   if (!confirm('确定恢复热点模式？设备将断开局域网。')) return;
   await fetch('/api/forgetwifi', {method:'POST'});
   $('status').innerText = '正在重启进入热点模式...';
+}
+
+async function uploadFirmware() {
+  const f = $('firmware').files[0];
+  if (!f) { alert('请先选择固件 .bin 文件'); return; }
+  const fd = new FormData();
+  fd.append('firmware', f);
+  $('updateStatus').innerText = '正在上传固件，请勿断电...';
+  try {
+    const r = await fetch('/update', { method: 'POST', body: fd });
+    const t = await r.text();
+    $('updateStatus').innerText = t + '（设备将自动重启）';
+  } catch(e) {
+    $('updateStatus').innerText = '升级失败：' + e.message;
+  }
 }
 
 async function refresh() {
@@ -628,6 +676,42 @@ void setup() {
   server.on("/api/save", HTTP_POST, handleSave);
   server.on("/api/wifi", HTTP_POST, handleWiFiConfig);
   server.on("/api/forgetwifi", HTTP_POST, handleForgetWiFi);
+
+  // 网页 OTA 升级：接收上传的固件 .bin，写入另一个 OTA 分区，完成后重启
+  server.on("/update", HTTP_POST,
+    []() {
+      // 整个请求体接收完成后的回调
+      if (Update.hasError()) {
+        server.send(500, "text/plain", "升级失败：" + String(Update.getError()));
+      } else {
+        server.send(200, "text/plain", "升级成功，设备即将重启...");
+        delay(500);
+        ESP.restart();
+      }
+    },
+    []() {
+      // 接收上传数据的回调（分块流式写入）
+      HTTPUpload& upload = server.upload();
+      if (upload.status == UPLOAD_FILE_START) {
+        Serial.printf("OTA 开始: %s\n", upload.filename.c_str());
+        // UPDATE_SIZE_UNKNOWN：使用当前可用的最大空间
+        if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+          Update.printError(Serial);
+        }
+      } else if (upload.status == UPLOAD_FILE_WRITE) {
+        if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+          Update.printError(Serial);
+        }
+      } else if (upload.status == UPLOAD_FILE_END) {
+        if (Update.end(true)) {  // true = 设置下次启动使用该分区
+          Serial.printf("OTA 成功: %u 字节\n", upload.totalSize);
+        } else {
+          Update.printError(Serial);
+        }
+      }
+    }
+  );
+
   server.begin();
 
   Serial.println("HTTP server started.");

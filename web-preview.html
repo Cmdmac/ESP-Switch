@@ -33,6 +33,11 @@
   .note { font-size: 0.75rem; color: #999; margin-top: 10px; text-align: center; }
   .banner { background: #fff7e6; border: 1px solid #ffd591; color: #ad6800; border-radius: 12px; padding: 10px 14px; font-size: 0.82rem; margin-bottom: 16px; display:flex; justify-content:space-between; align-items:center; gap:10px; }
   .banner button { width: auto; padding: 8px 12px; font-size: 0.82rem; background: #fa8c16; }
+  .tabs { display: flex; border-bottom: 2px solid #e6e6e6; margin-bottom: 18px; }
+  .tab { flex: 1; text-align: center; padding: 12px 4px 11px; color: #999; font-size: 0.95rem; cursor: pointer; border-bottom: 3px solid transparent; margin-bottom: -2px; transition: color .2s, border-color .2s; user-select: none; }
+  .tab.active { color: var(--primary); font-weight: 600; border-bottom-color: var(--primary); }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
 </style>
 </head>
 <body>
@@ -45,77 +50,97 @@
     <button type="button" onclick="enableDeviceMode()">连接真实设备</button>
   </div>
 
-  <div class="card">
-    <div class="row">
-      <span class="label">电源开关</span>
-      <label class="switch">
-        <input type="checkbox" id="power" onchange="setPower()">
-        <span class="slider"></span>
-      </label>
-    </div>
+  <div class="tabs">
+    <div class="tab active" id="tabBtn-control" onclick="switchTab('control')">控制</div>
+    <div class="tab" id="tabBtn-network" onclick="switchTab('network')">网络</div>
+    <div class="tab" id="tabBtn-ota" onclick="switchTab('ota')">升级</div>
   </div>
 
-  <div class="card">
-    <div class="row">
-      <span class="label">亮度</span>
-      <span class="value" id="brightnessVal">50%</span>
-    </div>
-    <input type="range" id="brightness" min="0" max="100" value="50" oninput="updateBrightnessLabel()" onchange="setBrightness()">
-  </div>
-
-  <div class="card">
-    <div class="row">
-      <div>
-        <div class="metric-label">环境亮度</div>
-        <div class="metric" id="ambient">--</div>
-      </div>
-      <div style="text-align:right;">
-        <div class="metric-label">实时电流</div>
-        <div class="metric" id="current">--</div>
+  <div class="tab-content active" id="tab-control">
+    <div class="card">
+      <div class="row">
+        <span class="label">电源开关</span>
+        <label class="switch">
+          <input type="checkbox" id="power" onchange="setPower()">
+          <span class="slider"></span>
+        </label>
       </div>
     </div>
+
+    <div class="card">
+      <div class="row">
+        <span class="label">亮度</span>
+        <span class="value" id="brightnessVal">50%</span>
+      </div>
+      <input type="range" id="brightness" min="0" max="100" value="50" oninput="updateBrightnessLabel()" onchange="setBrightness()">
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <div>
+          <div class="metric-label">环境亮度</div>
+          <div class="metric" id="ambient">--</div>
+        </div>
+        <div style="text-align:right;">
+          <div class="metric-label">实时电流</div>
+          <div class="metric" id="current">--</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <span class="label">定时开关</span>
+        <label class="switch">
+          <input type="checkbox" id="scheduleEn" onchange="saveSchedule()">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="row">
+        <span class="label">开启时间</span>
+        <input type="time" id="onTime" onchange="saveSchedule()">
+      </div>
+      <div class="row">
+        <span class="label">关闭时间</span>
+        <input type="time" id="offTime" onchange="saveSchedule()">
+      </div>
+    </div>
+
+    <button onclick="saveSettings()">保存灯光设置到 Flash</button>
   </div>
 
-  <div class="card">
-    <div class="row">
-      <span class="label">定时开关</span>
-      <label class="switch">
-        <input type="checkbox" id="scheduleEn" onchange="saveSchedule()">
-        <span class="slider"></span>
-      </label>
-    </div>
-    <div class="row">
-      <span class="label">开启时间</span>
-      <input type="time" id="onTime" onchange="saveSchedule()">
-    </div>
-    <div class="row">
-      <span class="label">关闭时间</span>
-      <input type="time" id="offTime" onchange="saveSchedule()">
+  <div class="tab-content" id="tab-network">
+    <div class="card">
+      <div class="row">
+        <span class="label">网络模式</span>
+        <span class="value" id="netMode">--</span>
+      </div>
+      <div class="row">
+        <span class="label">当前地址</span>
+        <span class="value" id="netIp">--</span>
+      </div>
+      <div class="row">
+        <span class="label">Wi-Fi 名称</span>
+        <input type="text" id="wifiSsid" placeholder="SSID" style="width:55%;">
+      </div>
+      <div class="row">
+        <span class="label">密码</span>
+        <input type="password" id="wifiPassword" placeholder="留空不修改" style="width:55%;">
+      </div>
+      <button type="button" onclick="saveWiFi()">保存并连接 Wi-Fi</button>
+      <div class="note"><a href="#" onclick="forgetWiFi();return false;" style="color:#888;">忘记 Wi-Fi，恢复热点模式</a></div>
     </div>
   </div>
 
-  <div class="card">
-    <div class="row">
-      <span class="label">网络模式</span>
-      <span class="value" id="netMode">--</span>
+  <div class="tab-content" id="tab-ota">
+    <div class="card">
+      <div class="label" style="margin-bottom:10px;">固件升级（OTA）</div>
+      <input type="file" id="firmware" accept=".bin" style="width:100%;font-size:0.9rem;margin-bottom:10px;">
+      <button type="button" onclick="uploadFirmware()">选择 .bin 并升级</button>
+      <div class="note" id="updateStatus"></div>
     </div>
-    <div class="row">
-      <span class="label">当前地址</span>
-      <span class="value" id="netIp">--</span>
-    </div>
-    <div class="row">
-      <span class="label">Wi-Fi 名称</span>
-      <input type="text" id="wifiSsid" placeholder="SSID" style="width:55%;">
-    </div>
-    <div class="row">
-      <span class="label">密码</span>
-      <input type="password" id="wifiPassword" placeholder="留空不修改" style="width:55%;">
-    </div>
-    <button type="button" onclick="saveWiFi()">保存并连接 Wi-Fi</button>
-    <div class="note"><a href="#" onclick="forgetWiFi();return false;" style="color:#888;">忘记 Wi-Fi，恢复热点模式</a></div>
   </div>
 
-  <button onclick="saveSettings()">保存灯光设置到 Flash</button>
   <div class="note" id="status">预览模式已就绪</div>
 </div>
 
@@ -135,6 +160,13 @@ const state = {
 };
 
 function updateBrightnessLabel() { $('brightnessVal').innerText = $('brightness').value + '%'; }
+function switchTab(name) {
+  ['control','network','ota'].forEach(t => {
+    $('tab-' + t).classList.toggle('active', t === name);
+    $('tabBtn-' + t).classList.toggle('active', t === name);
+  });
+  window.scrollTo(0, 0);
+}
 
 // ===== 模拟数据生成 =====
 function mockStatus() {
@@ -224,6 +256,25 @@ async function forgetWiFi() {
   }
   await fetch(BASE_URL + '/api/forgetwifi', {method:'POST'});
   $('status').innerText = '正在重启进入热点模式...';
+}
+
+async function uploadFirmware() {
+  const f = $('firmware').files[0];
+  if (!f) { alert('请先选择固件 .bin 文件'); return; }
+  if (DEMO_MODE) {
+    $('updateStatus').innerText = '预览模式：请连接真实设备后再升级';
+    return;
+  }
+  const fd = new FormData();
+  fd.append('firmware', f);
+  $('updateStatus').innerText = '正在上传固件，请勿断电...';
+  try {
+    const r = await fetch(BASE_URL + '/update', { method: 'POST', body: fd });
+    const t = await r.text();
+    $('updateStatus').innerText = t + '（设备将自动重启）';
+  } catch(e) {
+    $('updateStatus').innerText = '升级失败：' + e.message;
+  }
 }
 
 // ===== 连接真实设备 =====
