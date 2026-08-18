@@ -10,10 +10,10 @@
   - ESP32-C2 / ESP32-C3 : PWM dimming + ambient + current; multi ADC channels
   - ESP8285 (ESP8266)    : on/off + PWM brightness (GPIO5 analogWrite), current only; single ADC (A0)
 
-  Hardware (ESP32 default pin mapping):
-  - GPIO2 : lamp PWM output (brightness control)
-  - GPIO3 : ambient light sensor (ADC)
-  - GPIO4 : current sense amplifier output (ADC)
+  Hardware (ESP32-C3 pin mapping):
+  - GPIO4 : lamp PWM output (brightness control)
+  - GPIO3 : ambient light sensor (ADC, photodiode + 10k pulldown)
+  - GPIO0 : current sense amplifier output (ADC, with R11/R84 2/3 divider)
   - GPIO9 : on-board BOOT button (active LOW; separate from the lamp pin)
 
   ESP8285 default pin mapping (see the config block below):
@@ -35,6 +35,7 @@
   #include <ESP8266mDNS.h>
   #include <EEPROM.h>
   #include <Updater.h>        // 网页 OTA 固件升级（esp8266 的 Update 类）
+  #include <TZ.h>             // NTP 时区字符串（如 TZ_Asia_Shanghai）
 
   // ---- ESP8266 专用：必须放在“最后一个 #include”之前 ----
   // Arduino IDE 会自动生成函数前向原型并插在最后一个 #include 之后，
@@ -58,6 +59,7 @@
   #include <Preferences.h>
   #include <ESPmDNS.h>
   #include <Update.h>         // 网页 OTA 固件升级
+  #include <time.h>           // NTP 时间：configTime / getLocalTime / time()
 #endif
 
 // ==================== 硬件引脚配置（按芯片分两套） ====================
@@ -81,10 +83,10 @@
   #define CURRENT_CAL_SCALE       1.6f  // 实测校准：该板同负载实测电流约为显示值的 2.2 倍，用于修正分压/增益总误差
 #else
   // ---- ESP32-C2/C3 引脚 ----
-  #define LIGHT_PWM_PIN           2     // 灯 PWM 输出（直接驱动灯，板载无独立状态 LED）
+  #define LIGHT_PWM_PIN           4     // 灯 PWM 输出（直接驱动灯，板载无独立状态 LED）
   #define STATUS_LED_PIN          (-1)  // 独立状态 LED；本板无此功能，设为 -1 禁用
-  #define AMBIENT_LIGHT_ADC_PIN   3     // 光敏检测
-  #define CURRENT_ADC_PIN         4     // 电流检测
+  #define AMBIENT_LIGHT_ADC_PIN   3     // 光敏检测：VDD → 光敏二极管 U2 → GPIO3 → R8(10k) → GND，亮度越高电压越高
+  #define CURRENT_ADC_PIN         0     // 电流检测
   #define BUTTON_PIN              9     // 本地按键 = 板载 BOOT 键(GPIO9，低电平有效)
   #define BRIGHTNESS_SUPPORTED    1
   #define AMBIENT_SUPPORTED       1
@@ -119,10 +121,10 @@
   #define CURRENT_SENSE_GAIN           20.0f      // INA180A1 固定增益 20 V/V
   #define CURRENT_SENSE_DIVIDER_RATIO  (1.0f/3.0f) // 分压比 1/3
 #else
-  // ESP32 参考板：无输出分压，直接 3.3V ADC
-  #define SHUNT_RESISTANCE_MILLIOHM    20.0f
+  // ESP32-C3 板：GPIO0 前端有 R11=100kΩ / R84=200kΩ 分压，Vadc = V_INA180 × 2/3
+  #define SHUNT_RESISTANCE_MILLIOHM    150.0f
   #define CURRENT_SENSE_GAIN           20.0f
-  #define CURRENT_SENSE_DIVIDER_RATIO  1.0f
+  #define CURRENT_SENSE_DIVIDER_RATIO  (2.0f/3.0f)
 #endif
 
 // 清零阈值：低于该电流(A)视为 INA180 偏置/噪声，归零不显示。
@@ -172,7 +174,9 @@ uint16_t offTimeMinutes = 23 * 60;
 
 // 电流采样平滑
 float currentSmoothed = 0.0f;
-const float CURRENT_ALPHA = 0.2f;
+int32_t currentOffsetMV = 0;   // 开机零点校准：INA180 偏置电压(mV)，从每次读数扣除
+const float CURRENT_ALPHA = 0.5f;   // 平滑系数：越大越灵敏（0.5 + 100ms 高频采样 ≈ 0.5s 收敛）
+uint32_t lastCurrentSampleMs = 0;   // 最近一次电流采样时刻(ms)，供 loop 高频采样
 
 // 电流诊断（供网页显示，实时刷新）
 int      diagRawAdc     = 0;       // 原始 ADC 读数（0 ~ ADC_MAX）
@@ -524,15 +528,19 @@ uint32_t readVoltageMV(uint8_t pin) {
 uint8_t readAmbientPercent() {
   if (AMBIENT_LIGHT_ADC_PIN < 0) return 0;   // ESP8285 不读环境光
   uint32_t mv = readVoltageMV(AMBIENT_LIGHT_ADC_PIN);
-  // 环境越亮，光敏电阻阻值越低，分压越小。0mV=100%（最亮），ADC_VREF_MV=0%（最暗）
-  if (mv >= ADC_VREF_MV) return 0;
-  return (uint8_t)((ADC_VREF_MV - mv) * 100UL / ADC_VREF_MV);
+  // 本板光敏电路：VDD → 光敏二极管 U2 → GPIO3 → R8(10k) → GND。
+  // 亮度越高，光电流越大，GPIO3 电压越高。因此直接用 mv / Vref 得到亮度百分比。
+  uint32_t pct = mv * 100UL / ADC_VREF_MV;
+  if (pct > 100) pct = 100;
+  return (uint8_t)pct;
 }
 
 float readCurrentA() {
   if (!CURRENT_SUPPORTED) { diagRawAdc = 0; diagMv = 0; diagCurrentMA = 0; return 0.0f; }
   int rawAdc = (int)analogRead(CURRENT_ADC_PIN);   // 单次原始读数，用于网页诊断展示
-  uint32_t mv = readVoltageMV(CURRENT_ADC_PIN);
+  uint32_t mvRaw = readVoltageMV(CURRENT_ADC_PIN);
+  // 扣除开机校准得到的 INA180 零点偏置，避免空载显示假电流（如 ESP32-C3 的 ~180mA）
+  uint32_t mv = (mvRaw > (uint32_t)currentOffsetMV) ? (mvRaw - (uint32_t)currentOffsetMV) : 0;
   float shuntOhm = SHUNT_RESISTANCE_MILLIOHM / 1000.0f;
   if (shuntOhm <= 0.0f || CURRENT_SENSE_GAIN <= 0.0f) {
     diagRawAdc = rawAdc; diagMv = mv; diagCurrentMA = 0;
@@ -564,24 +572,63 @@ String minutesToTimeStr(uint16_t mins) {
   return String(buf);
 }
 
+// 取“当天分钟数”。联网时返回真实本地时间（NTP 同步后的墙钟），
+// 未同步时回落到“开机后分钟数”，保证无外网也能粗略工作。
 uint16_t getDeviceMinutesSinceMidnight() {
+  time_t now = time(nullptr);
+  if (now > 100000) {                 // 已同步真实时间（2026 年 epoch 远大于此）
+    struct tm t;
+#ifdef ESP8266
+    localtime_r(&now, &t);
+#else
+    getLocalTime(&t);
+#endif
+    return (uint16_t)(t.tm_hour * 60 + t.tm_min);
+  }
   return (uint16_t)((millis() / 60000UL) % 1440UL);
+}
+
+// 连上局域网后同步真实时间（中国 UTC+8）。AP 模式无外网则不同步，定时回落到开机计时。
+void syncTime() {
+  if (!staMode) return;
+#ifdef ESP8266
+  configTime(TZ_Asia_Shanghai, 0, "pool.ntp.org", "time.nist.gov");
+#else
+  configTime(8 * 3600, 0, "pool.ntp.org", "time.nist.gov", "time.cloudflare.com");
+#endif
+}
+
+// 启动后阻塞等待 NTP 时间就位（最多 ~3 秒），让开机时灯状态能与定时对齐
+void waitForTimeSync() {
+  if (!staMode) return;
+  for (int i = 0; i < 30; i++) {
+    if (time(nullptr) > 100000) return;
+    delay(100);
+  }
+}
+
+// 给定分钟数，判断定时状态下灯“应该”开还是关
+bool scheduleShouldBeOn(uint16_t nowMin) {
+  if (onTimeMinutes == offTimeMinutes) return lightOn;   // 起止相同则不强制改变
+  if (onTimeMinutes < offTimeMinutes)
+    return (nowMin >= onTimeMinutes && nowMin < offTimeMinutes);
+  return (nowMin >= onTimeMinutes || nowMin < offTimeMinutes);
 }
 
 void applySchedule() {
   if (!scheduleEnabled) return;
   uint16_t nowMin = getDeviceMinutesSinceMidnight();
-  bool shouldBeOn;
-  if (onTimeMinutes == offTimeMinutes) {
-    shouldBeOn = lightOn;
-  } else if (onTimeMinutes < offTimeMinutes) {
-    shouldBeOn = (nowMin >= onTimeMinutes && nowMin < offTimeMinutes);
-  } else {
-    shouldBeOn = (nowMin >= onTimeMinutes || nowMin < offTimeMinutes);
-  }
-  if (shouldBeOn != lightOn) {
-    lightOn = shouldBeOn;
-    setLightOutput();
+  // 仅在到达“开点”或“关点”这一分钟内动作一次，平时不干扰手动开关
+  static uint16_t lastBoundaryMin = 0xFFFF;
+  bool atOn  = (nowMin == onTimeMinutes);
+  bool atOff = (nowMin == offTimeMinutes);
+  if ((atOn || atOff) && lastBoundaryMin != nowMin) {
+    lastBoundaryMin = nowMin;
+    bool shouldBeOn = atOn;   // 到开点 -> 开；到关点 -> 关
+    if (shouldBeOn != lightOn) {
+      lightOn = shouldBeOn;
+      setLightOutput();
+    }
   }
 }
 
@@ -871,6 +918,12 @@ void handleSchedule() {
   if (newOff.length() == 5) offTimeStr = newOff;
   onTimeMinutes = timeStrToMinutes(onTimeStr);
   offTimeMinutes = timeStrToMinutes(offTimeStr);
+  // 启用定时时立即按当前时间对齐灯状态；之后仅在定时边界点动作（不抢手动控制）
+  if (scheduleEnabled) {
+    uint16_t nowMin = getDeviceMinutesSinceMidnight();
+    bool shouldBeOn = scheduleShouldBeOn(nowMin);
+    if (shouldBeOn != lightOn) { lightOn = shouldBeOn; setLightOutput(); }
+  }
   server.send(200, "text/plain", "OK");
 }
 
@@ -928,17 +981,38 @@ void setup() {
 #endif
 
   setupPWM();
-  loadSettings();
-  setLightOutput();
-  setupNetwork();
 
-  // 电流采样诊断（ESP8285）：开灯后看这一行，与网页「电流诊断」卡片内容一致。
+  // 电流零点校准：开机、确保继电器关闭（无负载）时采样 INA180 零点偏置，后续读数扣除，空载显示归零。
+  // （ESP32-C3 实测 GPIO0 有约 72mV 偏置，直接算成 180mA；校准后可消除空载假电流。）
+  if (CURRENT_SUPPORTED) {
+    lightOn = false;            // 强制关灯，确保采样时无负载
+    setLightOutput();
+    delay(300);
+    int32_t acc = 0;
+    for (int i = 0; i < 16; i++) { acc += (int32_t)readVoltageMV(CURRENT_ADC_PIN); delay(10); }
+    currentOffsetMV = acc / 16;
+    Serial.println("[电流校准] 零点偏移=" + String(currentOffsetMV) + " mV (已扣除，空载将显示 0)");
+  }
+
+  loadSettings();
+  setupNetwork();
+  syncTime();
+  waitForTimeSync();
+  // 开机按当前（真实）时间让灯状态与定时一致：当前在开启窗口内则点亮，否则熄灭
+  if (scheduleEnabled) {
+    uint16_t nowMin = getDeviceMinutesSinceMidnight();
+    bool shouldBeOn = scheduleShouldBeOn(nowMin);
+    if (shouldBeOn != lightOn) lightOn = shouldBeOn;
+  }
+  setLightOutput();
+
+  // 电流采样诊断：开灯后看这一行，与网页「电流诊断」卡片内容一致。
   //   - raw=0 / mV=0  → 硬件上 A0 没信号（INA180 输出没接到 A0，或 R_shunt/分压未焊好），与软件无关。
-  //   - mV 有值但电流算错 → 多半是 SHUNT_RESISTANCE_MILLIOHM / 分压比还需微调。
+  //   - mV 有值但电流算错 → 多半是 SHUNT_RESISTANCE_MILLIOHM / 分压比 / currentOffsetMV 还需微调。
   if (CURRENT_SUPPORTED) {
     readCurrentA();   // 填充 diagRawAdc / diagMv / diagCurrentMA
     Serial.println("[电流诊断] rawADC=" + String(diagRawAdc) +
-                  "  A0电压=" + String(diagMv) + " mV" +
+                  "  补偿后电压=" + String(diagMv) + " mV" +
                   "  计算电流=" + String(diagCurrentMA, 1) + " mA");
   }
 
@@ -996,5 +1070,13 @@ void loop() {
   applySchedule();
   handleButton();
   ensureWiFi();   // 运行中掉线自动回连上次 Wi-Fi
+
+  // 高频采样电流：loop 每 100ms 调一次 readCurrentA()，让平滑值快速收敛，
+  // 避免网页实时电流滞后（之前只在网页刷新时才采样，约 2s 一步，开灯要等好几秒才响应）
+  if (millis() - lastCurrentSampleMs >= 100) {
+    lastCurrentSampleMs = millis();
+    readCurrentA();
+  }
+
   delay(5);
 }
