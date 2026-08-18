@@ -325,6 +325,12 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       </div>
       <button type="button" onclick="saveWiFi()">保存并连接 Wi-Fi</button>
       <div class="note"><a href="#" onclick="forgetWiFi();return false;" style="color:#888;">忘记 Wi-Fi，恢复热点模式</a></div>
+      <div class="note" style="margin-top:12px;line-height:1.6;color:#555;">
+        连接成功后，在与开关<b>同一局域网</b>的手机/电脑上，浏览器打开
+        <b style="color:#007aff;">http://esp-light-switch.local</b>
+        即可访问控制页面。<br>
+        若该地址打不开，请用上方“当前地址”里的 IP 访问（如 http://192.168.x.x）。
+      </div>
     </div>
   </div>
 
