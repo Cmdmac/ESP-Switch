@@ -349,10 +349,10 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 
 <script>
 const $ = id => document.getElementById(id);
-// 电流自动切换单位：<1A 显示 mA，≥1A 显示 A
+// 电流自动切换单位：<1A 显示整数 mA（无小数），≥1A 显示 A（2 位小数）
 function fmtCurrent(a) {
   if (!(typeof a === 'number') || !isFinite(a) || a < 0) a = 0;
-  if (a < 1.0) return (a * 1000).toFixed(1) + ' mA';
+  if (a < 1.0) return (a * 1000).toFixed(0) + ' mA';
   return a.toFixed(2) + ' A';
 }
 // 电流诊断卡片：点击实时电流，整张卡片显示/隐藏（无箭头）
@@ -907,7 +907,7 @@ void handleStatus() {
   json += "\"on\":" + String(lightOn ? "true" : "false") + ",";
   json += "\"brightness\":" + String(brightnessPercent) + ",";
   json += "\"ambient\":" + String(readAmbientPercent()) + ",";
-  json += "\"current\":" + String(readCurrentA(), 3) + ",";
+  json += "\"current\":" + String(readCurrentA(), 3) + ",";  // 3 位小数=1mA 分辨率；网页 mA 以整数显示（无小数），足够
   json += "\"scheduleEnabled\":" + String(scheduleEnabled ? "true" : "false") + ",";
   json += "\"onTime\":\"" + onTimeStr + "\",";
   json += "\"offTime\":\"" + offTimeStr + "\",";
