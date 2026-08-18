@@ -92,7 +92,7 @@
   #define AMBIENT_SUPPORTED       1
   #define CURRENT_SUPPORTED       1
   #define ADC_MAX                 4095  // ESP32 ADC 12 位
-  #define ADC_VREF_MV             3300  // 使用 ADC_11db 衰减后约 0~3.3V
+  #define ADC_VREF_MV             3100  // ADC_11db 衰减有效满量程约 0~3.1V（与 ESPHome 一致，保证电压换算准确）
   #define CURRENT_CAL_SCALE       1.0f  // ESP32 参考板暂不校准
 #endif
 
@@ -121,8 +121,11 @@
   #define CURRENT_SENSE_GAIN           20.0f      // INA180A1 固定增益 20 V/V
   #define CURRENT_SENSE_DIVIDER_RATIO  (1.0f/3.0f) // 分压比 1/3
 #else
-  // ESP32-C3 板：GPIO0 前端有 R11=100kΩ / R84=200kΩ 分压，Vadc = V_INA180 × 2/3
-  #define SHUNT_RESISTANCE_MILLIOHM    150.0f
+  // ESP32-C2/C3 板：GPIO0 前端有 R11=100kΩ / R84=200kΩ 分压，Vadc = V_INA180 × 2/3
+  // 与 ESPHome 配置对齐：r_shunt = 0.1Ω(100mΩ)、增益 20、2/3 分压
+  //   current(A) = V_gpio0 / (0.1 × 20 × 2/3) = V_gpio0 × 0.75
+  //   等价于 ESPHome 的 (x*1.5)/20.0/0.1*1000 (mA)
+  #define SHUNT_RESISTANCE_MILLIOHM    100.0f
   #define CURRENT_SENSE_GAIN           20.0f
   #define CURRENT_SENSE_DIVIDER_RATIO  (2.0f/3.0f)
 #endif
@@ -552,6 +555,9 @@ float readCurrentA() {
     diagRawAdc = rawAdc; diagMv = mv; diagCurrentMA = 0;
     return 0.0f;
   }
+  // 电流(A) = V_gpio0(V) / (R_shunt × 增益 × 分压比)
+  //          = (mv/1000) / (0.1 × 20 × 2/3) = (mv/1000) × 0.75
+  //          等价于 ESPHome 的 (x*1.5)/20.0/0.1*1000 (mA)
   float currentRaw = (mv / 1000.0f) / (shuntOhm * CURRENT_SENSE_GAIN * CURRENT_SENSE_DIVIDER_RATIO);
   diagRawAdc = rawAdc;
   diagMv = mv;
