@@ -58,6 +58,19 @@
   .log-done { color: #86efac; font-weight: 600; }
   .log-head { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-bottom: 8px; }
   .pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: #eef2ff; color: var(--primary-d); }
+  .dlbtn { display:inline-block; padding: 7px 14px; border-radius: 8px; background: var(--ok); color:#fff; text-decoration:none; font-size: 13px; white-space: nowrap; flex-shrink: 0; }
+  .dlbtn:hover { background: #15803d; }
+  .fw-item { display:flex; align-items:center; justify-content:space-between; gap:12px; border:1px solid var(--border); border-radius:8px; padding:8px 12px; }
+  .fw-info { min-width: 0; flex: 1 1 auto; }
+  .fw-name { font-family: var(--mono); font-size:13px; word-break: break-all; }
+  .fw-size { font-size:12px; color: var(--muted); }
+  .twocol { display:flex; gap:16px; align-items:flex-start; }
+  .twocol .logcard { flex: 1 1 auto; min-width:0; }
+  .twocol .fwcard { flex: 0 0 340px; position: sticky; top: 20px; }
+  @media (max-width: 860px) {
+    .twocol { flex-direction: column; }
+    .twocol .fwcard { flex: 1 1 auto; position: static; }
+  }
 </style>
 </head>
 <body>
@@ -94,11 +107,18 @@
     </div>
   </div>
 
-  <div class="card">
-    <div class="log-head">实时日志 <span id="runlabel"></span></div>
-    <pre id="log"></pre>
-    <div class="btns" style="margin-top:10px;">
-      <button class="ghost" id="btnClear">清空日志</button>
+  <div class="twocol">
+    <div class="card logcard">
+      <div class="log-head">实时日志 <span id="runlabel"></span></div>
+      <pre id="log"></pre>
+      <div class="btns" style="margin-top:10px;">
+        <button class="ghost" id="btnClear">清空日志</button>
+      </div>
+    </div>
+
+    <div class="card fwcard" id="fwcard">
+      <div class="log-head">编译产物（固件）</div>
+      <div id="fwlist"><div class="fw-size">（编译成功后在此显示固件名 / 大小，并提供下载）</div></div>
     </div>
   </div>
 
@@ -166,6 +186,9 @@ function runStream(url, label, onDone) {
   });
   es.addEventListener('out', e => append('out', JSON.parse(e.data)));
   es.addEventListener('err', e => append('err', JSON.parse(e.data)));
+  es.addEventListener('firmware', e => {
+    try { showFirmware(JSON.parse(e.data)); } catch (_) {}
+  });
   es.addEventListener('done', e => {
     const d = JSON.parse(e.data);
     append(d.code === 0 ? 'done' : 'err', (d.code === 0 ? '✔ ' : '✘ ') + label + ' 结束，退出码 ' + d.code);
@@ -221,6 +244,32 @@ $('btnStop').onclick = () => {
 
 $('btnClear').onclick = () => { logEl.innerHTML = ''; };
 $('refreshPort').onclick = refreshPorts;
+
+function fmtSize(b) {
+  if (b == null) return '';
+  if (b < 1024) return b + ' B';
+  if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB';
+  return (b / 1024 / 1024).toFixed(2) + ' MB';
+}
+
+function showFirmware(d) {
+  if (!d || !d.files || !d.files.length) {
+    $('fwlist').innerHTML = '<div class="fw-size">（本次编译未生成 .bin 产物）</div>';
+    return;
+  }
+  let html = '';
+  if (d.size != null) html += `<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">程序占用 Flash：${fmtSize(d.size)}</div>`;
+  html += '<div style="display:flex;flex-direction:column;gap:8px;">';
+  d.files.forEach(f => {
+    const url = `/api/download?fqbn=${encodeURIComponent(d.fqbn || '')}&file=${encodeURIComponent(f.name)}`;
+    html += `<div class="fw-item">
+      <div class="fw-info"><div class="fw-name">${f.name}</div><div class="fw-size">${fmtSize(f.size)}</div></div>
+      <a href="${url}" class="dlbtn" download>下载</a>
+    </div>`;
+  });
+  html += '</div>';
+  $('fwlist').innerHTML = html;
+}
 
 loadMeta();
 </script>
