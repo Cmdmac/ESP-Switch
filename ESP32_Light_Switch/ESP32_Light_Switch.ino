@@ -132,11 +132,11 @@
 #define CURRENT_ZERO_THRESHOLD_A  0.010f
 
 // ==================== Wi-Fi AP 配置 ====================
-#define AP_SSID         "ESP-Light-Switch"
+#define AP_SSID_PREFIX  "ESPSwitch-"   // 热点名前缀，后接 MAC 后两字节作为唯一编号（如 ESPSwitch-1A2B）
 #define AP_PASSWORD     "12345678"    // 至少 8 位
 #define AP_CHANNEL      1
 #define AP_MAX_CLIENTS  4
-#define DEVICE_HOSTNAME     "esp-light-switch"
+#define MDNS_HOST_PREFIX   "espswitch-"   // mDNS 主机名前缀（小写，符合 mDNS 规范），后接 MAC 后两字节唯一编号（如 espswitch-1A2B.local）
 #define WIFI_CONNECT_TIMEOUT_MS  20000  // STA 连接超时，超时后回退到热点
 
 // ==================== 全局对象 ====================
@@ -327,8 +327,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       <div class="note"><a href="#" onclick="forgetWiFi();return false;" style="color:#888;">忘记 Wi-Fi，恢复热点模式</a></div>
       <div class="note" style="margin-top:12px;line-height:1.6;color:#555;">
         连接成功后，在与开关<b>同一局域网</b>的手机/电脑上，浏览器打开
-        <b style="color:#007aff;">http://esp-light-switch.local</b>
-        即可访问控制页面。<br>
+        <b style="color:#007aff;" id="mdnsHint">http://espswitch-XXXX.local</b><br>
         若该地址打不开，请用上方“当前地址”里的 IP 访问（如 http://192.168.x.x）。
       </div>
     </div>
@@ -461,6 +460,7 @@ async function refresh() {
     $('status').innerText = '已连接 (' + d.ip + ') · 运行 ' + upH + ':' + upM + ':' + upS;
     var fv = (d.ver && d.ver.length) ? d.ver : '?';
     $('subtitle').innerText = 'ESP Light Switch · v' + fv;
+    if (d.mdns && $('mdnsHint')) $('mdnsHint').innerText = 'http://' + d.mdns;
   } catch(e) {
     $('status').innerText = '连接失败，请检查网络后刷新';
   }
@@ -801,9 +801,28 @@ void clearWiFi() {
 #endif
 }
 
+// 取设备唯一编号（如 "1A2B"），热点名与 mDNS 域名共用，保证多台设备可区分。
+// 关键：必须用出厂固定的硬件标识，不能用 WiFi.macAddress()——ESP32 在 AP/STA 模式下
+// 返回的 MAC 不同（STA=base，AP=base+1），会导致热点名后缀与连上 WiFi 后的域名后缀不一致。
+const char* getMacSuffix() {
+  static char suffix[5] = {0};
+  if (suffix[0] == 0) {
+#ifdef ESP8266
+    uint32_t id = ESP.getChipId();
+    snprintf(suffix, sizeof(suffix), "%02X%02X", (uint8_t)(id >> 8), (uint8_t)id);
+#else
+    uint64_t efuse = ESP.getEfuseMac();   // 出厂烧录，与 WiFi 模式无关，固定不变
+    snprintf(suffix, sizeof(suffix), "%02X%02X", (uint8_t)(efuse >> 8), (uint8_t)efuse);
+#endif
+  }
+  return suffix;
+}
+
 void startMDNS() {
-  if (MDNS.begin(DEVICE_HOSTNAME)) {
-    Serial.printf("mDNS 已启动: %s.local\n", DEVICE_HOSTNAME);
+  char host[32];
+  snprintf(host, sizeof(host), MDNS_HOST_PREFIX "%s", getMacSuffix());
+  if (MDNS.begin(host)) {
+    Serial.printf("mDNS 已启动: %s.local\n", host);
   }
 }
 
@@ -818,6 +837,9 @@ void setupNetwork() {
     Serial.print("尝试连接 Wi-Fi: ");
     Serial.println(wifiSsid);
     WiFi.mode(WIFI_STA);
+    char host[32];
+    snprintf(host, sizeof(host), MDNS_HOST_PREFIX "%s", getMacSuffix());
+    WiFi.setHostname(host);   // 让路由器/局域网显示唯一主机名（如 espswitch-1A2B）
 #ifdef ESP8266
     WiFi.persistent(true);
     WiFi.setAutoReconnect(true);   // ESP8266：SDK 层自动回连已配网络
@@ -842,13 +864,15 @@ void setupNetwork() {
     Serial.println("局域网连接失败，回退到热点模式。");
   }
 
-  // 热点模式
+  // 热点模式：用 MAC 后两字节作为唯一编号，避免多台设备热点同名冲突（如 ESPSwitch-1A2B）
   staMode = false;
+  char apSsid[32];
+  snprintf(apSsid, sizeof(apSsid), AP_SSID_PREFIX "%s", getMacSuffix());
   WiFi.mode(WIFI_AP);
-  WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CHANNEL, 0, AP_MAX_CLIENTS);
+  WiFi.softAP(apSsid, AP_PASSWORD, AP_CHANNEL, 0, AP_MAX_CLIENTS);
   currentIP = WiFi.softAPIP().toString();
   Serial.print("热点已启动。SSID: ");
-  Serial.println(AP_SSID);
+  Serial.println(apSsid);
   Serial.print("密码: ");
   Serial.println(AP_PASSWORD);
   Serial.print("AP IP: ");
@@ -896,6 +920,9 @@ void handleStatus() {
   json += "\"curThrMA\":" + String(CURRENT_ZERO_THRESHOLD_A * 1000.0f, 0) + ",";
   json += "\"curCal\":" + String(CURRENT_CAL_SCALE, 2) + ",";
   json += "\"ver\":\"" + String(FIRMWARE_VERSION) + "\",";
+  char mdnsName[40];
+  snprintf(mdnsName, sizeof(mdnsName), "%s%s.local", MDNS_HOST_PREFIX, getMacSuffix());
+  json += "\"mdns\":\"" + String(mdnsName) + "\",";
   json += "\"uptime\":" + String(millis() / 1000UL);
   json += "}";
   server.send(200, "application/json", json);
