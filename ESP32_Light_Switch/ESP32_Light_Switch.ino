@@ -122,10 +122,9 @@
   #define CURRENT_SENSE_DIVIDER_RATIO  (1.0f/3.0f) // 分压比 1/3
 #else
   // ESP32-C2/C3 板：GPIO0 前端有 R11=100kΩ / R84=200kΩ 分压，Vadc = V_INA180 × 2/3
-  // 与 ESPHome 配置对齐：r_shunt = 0.1Ω(100mΩ)、增益 20、2/3 分压
-  //   current(A) = V_gpio0 / (0.1 × 20 × 2/3) = V_gpio0 × 0.75
-  //   等价于 ESPHome 的 (x*1.5)/20.0/0.1*1000 (mA)
-  #define SHUNT_RESISTANCE_MILLIOHM    100.0f
+  // 实际分流电阻 150mΩ（用户硬件确认；ESPHome 模板里的 0.1 只是占位示例）
+  //   current(A) = V_gpio0 / (0.15 × 20 × 2/3) = V_gpio0 / 2.0 = V_gpio0 × 0.5
+  #define SHUNT_RESISTANCE_MILLIOHM    150.0f
   #define CURRENT_SENSE_GAIN           20.0f
   #define CURRENT_SENSE_DIVIDER_RATIO  (2.0f/3.0f)
 #endif
@@ -556,8 +555,8 @@ float readCurrentA() {
     return 0.0f;
   }
   // 电流(A) = V_gpio0(V) / (R_shunt × 增益 × 分压比)
-  //          = (mv/1000) / (0.1 × 20 × 2/3) = (mv/1000) × 0.75
-  //          等价于 ESPHome 的 (x*1.5)/20.0/0.1*1000 (mA)
+  //          = (mv/1000) / (0.15 × 20 × 2/3) = (mv/1000) × 0.5
+  //          分流电阻 150mΩ（SHUNT_RESISTANCE_MILLIOHM），增益 20，分压比 2/3
   float currentRaw = (mv / 1000.0f) / (shuntOhm * CURRENT_SENSE_GAIN * CURRENT_SENSE_DIVIDER_RATIO);
   diagRawAdc = rawAdc;
   diagMv = mv;

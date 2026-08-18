@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>arduino-cli 网页控制台</title>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --card: #ffffff;
+    --border: #e2e5ea;
+    --text: #1f2329;
+    --muted: #6b7280;
+    --primary: #2563eb;
+    --primary-d: #1d4ed8;
+    --ok: #16a34a;
+    --err: #dc2626;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg); color: var(--text); padding: 20px;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    padding: 16px; margin-bottom: 16px;
+  }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  label { font-size: 12px; color: var(--muted); }
+  select, input[type=text], input[type=number] {
+    padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+    font-size: 14px; background: #fff; color: var(--text); min-width: 200px;
+  }
+  .check { display: flex; align-items: center; gap: 6px; font-size: 14px; }
+  button {
+    padding: 9px 16px; border: none; border-radius: 8px; font-size: 14px;
+    cursor: pointer; background: var(--primary); color: #fff; transition: background .15s;
+  }
+  button:hover { background: var(--primary-d); }
+  button.ghost { background: #eef2ff; color: var(--primary-d); }
+  button.ghost:hover { background: #e0e7ff; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .btns { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 4px; }
+  .status-dot { display:inline-block; width:9px; height:9px; border-radius:50%; background: var(--muted); margin-right:6px; vertical-align: middle; }
+  .status-dot.ok { background: var(--ok); }
+  .status-dot.err { background: var(--err); }
+  #log {
+    background: #0f172a; color: #e2e8f0; font-family: var(--mono); font-size: 12.5px;
+    padding: 12px; border-radius: 8px; min-height: 360px; height: 62vh; overflow: auto; white-space: pre-wrap; word-break: break-all; margin: 0;
+  }
+  .log-out { color: #cbd5e1; }
+  .log-err { color: #fca5a5; }
+  .log-sys { color: #93c5fd; }
+  .log-done { color: #86efac; font-weight: 600; }
+  .log-head { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: #eef2ff; color: var(--primary-d); }
+</style>
+</head>
+<body>
+  <h1>arduino-cli 网页控制台</h1>
+  <div class="sub">本地 Node 服务直接调用 arduino-cli —— 不用再敲命令 <span id="clistatus" class="pill">检测中…</span></div>
+
+  <div class="card">
+    <div class="row">
+      <div class="field">
+        <label>板型 (FQBN)</label>
+        <select id="board"></select>
+      </div>
+      <div class="field">
+        <label>端口</label>
+        <div style="display:flex; gap:8px;">
+          <select id="port"></select>
+          <button class="ghost" id="refreshPort">刷新</button>
+        </div>
+      </div>
+      <div class="field">
+        <label>监视波特率</label>
+        <input type="number" id="baud" value="115200" style="min-width:120px;" />
+      </div>
+      <div class="field">
+        <label>&nbsp;</label>
+        <span class="check"><input type="checkbox" id="verbose" /> 详细日志 (-v)</span>
+      </div>
+    </div>
+    <div class="btns">
+      <button id="btnCompile">① 编译</button>
+      <button id="btnUpload">② 编译并上传</button>
+      <button id="btnMonitor" class="ghost">③ 开始监视</button>
+      <button id="btnStop" class="ghost" disabled>④ 停止监视</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="log-head">实时日志 <span id="runlabel"></span></div>
+    <pre id="log"></pre>
+    <div class="btns" style="margin-top:10px;">
+      <button class="ghost" id="btnClear">清空日志</button>
+    </div>
+  </div>
+
+<script>
+const $ = id => document.getElementById(id);
+const logEl = $('log');
+let monitorES = null;   // 当前监视的 EventSource
+let busy = false;       // 编译/上传进行中
+
+function ts() {
+  const d = new Date();
+  return d.toTimeString().slice(0,8);
+}
+function append(cls, text) {
+  const atBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 40;
+  (Array.isArray(text) ? text : String(text).split('\n')).forEach(line => {
+    if (line === '') return;
+    const span = document.createElement('div');
+    span.className = 'log-' + cls;
+    span.textContent = '[' + ts() + '] ' + line;
+    logEl.appendChild(span);
+  });
+  if (atBottom) logEl.scrollTop = logEl.scrollHeight;
+}
+
+async function loadMeta() {
+  try {
+    const s = await (await fetch('/api/status')).json();
+    const dot = $('clistatus');
+    if (s.cliExists) { dot.textContent = 'arduino-cli ✓ ' + s.cli; dot.className = 'pill'; dot.style.background='#dcfce7'; dot.style.color='#166534'; }
+    else { dot.textContent = '未找到 arduino-cli'; dot.style.background='#fee2e2'; dot.style.color='#991b1b'; }
+  } catch(e) { }
+  // boards
+  try {
+    const b = await (await fetch('/api/boards')).json();
+    $('board').innerHTML = b.boards.map(x => `<option value="${x.fqbn}">${x.name} (${x.fqbn})</option>`).join('');
+  } catch(e) {}
+  refreshPorts();
+}
+
+async function refreshPorts() {
+  try {
+    const r = await (await fetch('/api/ports')).json();
+    const cur = $('port').value;
+    $('port').innerHTML = (r.ports.length ? r.ports : ['（无端口，请插板子后点刷新）'])
+      .map(p => `<option value="${p}">${p}</option>`).join('');
+    if (cur) $('port').value = cur;
+  } catch(e) {}
+}
+
+function setBusy(v) {
+  busy = v;
+  $('btnCompile').disabled = v;
+  $('btnUpload').disabled = v;
+  $('btnMonitor').disabled = v || (monitorES !== null);
+}
+
+function runStream(url, label, onDone) {
+  append('sys', '▶ ' + label + ' 开始…');
+  $('runlabel').textContent = '（' + label + ' 进行中）';
+  const es = new EventSource(url);
+  es.addEventListener('start', e => {
+    const d = JSON.parse(e.data);
+    append('sys', 'CLI: ' + d.cli);
+  });
+  es.addEventListener('out', e => append('out', JSON.parse(e.data)));
+  es.addEventListener('err', e => append('err', JSON.parse(e.data)));
+  es.addEventListener('done', e => {
+    const d = JSON.parse(e.data);
+    append(d.code === 0 ? 'done' : 'err', (d.code === 0 ? '✔ ' : '✘ ') + label + ' 结束，退出码 ' + d.code);
+    $('runlabel').textContent = '';
+    es.close();
+    if (onDone) onDone(d.code);
+  });
+  es.onerror = () => {
+    append('err', '⚠ EventSource 连接断开');
+    es.close();
+    if (onDone) onDone(-1);
+  };
+  return es;
+}
+
+$('btnCompile').onclick = () => {
+  if (busy) return;
+  setBusy(true);
+  const fqbn = $('board').value;
+  const verbose = $('verbose').checked ? '1' : '0';
+  runStream(`/api/stream/compile?fqbn=${encodeURIComponent(fqbn)}&verbose=${verbose}`, '编译', () => setBusy(false));
+};
+
+$('btnUpload').onclick = () => {
+  if (busy) return;
+  const port = $('port').value;
+  if (!port || port.startsWith('（')) { append('err', '请先选择一个有效端口'); return; }
+  setBusy(true);
+  const fqbn = $('board').value;
+  const verbose = $('verbose').checked ? '1' : '0';
+  runStream(`/api/stream/upload?fqbn=${encodeURIComponent(fqbn)}&port=${encodeURIComponent(port)}&verbose=${verbose}`, '编译并上传', () => setBusy(false));
+};
+
+$('btnMonitor').onclick = () => {
+  const port = $('port').value;
+  if (!port || port.startsWith('（')) { append('err', '请先选择一个有效端口'); return; }
+  if (monitorES) return;
+  const baud = $('baud').value || '115200';
+  append('sys', '▶ 监视 ' + port + ' @ ' + baud);
+  monitorES = runStream(`/api/stream/monitor?port=${encodeURIComponent(port)}&baud=${encodeURIComponent(baud)}`, '监视', () => {
+    monitorES = null; $('btnStop').disabled = true; $('btnMonitor').disabled = false;
+  });
+  $('btnStop').disabled = false;
+  $('btnMonitor').disabled = true;
+};
+
+$('btnStop').onclick = () => {
+  if (monitorES) { monitorES.close(); monitorES = null; }
+  append('sys', '■ 已请求停止监视');
+  $('btnStop').disabled = true;
+  $('btnMonitor').disabled = false;
+};
+
+$('btnClear').onclick = () => { logEl.innerHTML = ''; };
+$('refreshPort').onclick = refreshPorts;
+
+loadMeta();
+</script>
+</body>
+</html>
