@@ -82,11 +82,11 @@
   #define ADC_VREF_MV             1000  // ESP8285/ESP8266 ADC 量程 0~1.0V（与 ESP32 的 3.3V 不同）
   #define CURRENT_CAL_SCALE       1.6f  // 实测校准：该板同负载实测电流约为显示值的 2.2 倍，用于修正分压/增益总误差
 #else
-  // ---- ESP32-C2/C3 引脚 ----
+  // ---- ESP32-C2/C3 引脚（按你的原理图实际接线） ----
   #define LIGHT_PWM_PIN           4     // 灯 PWM 输出（直接驱动灯，板载无独立状态 LED）
   #define STATUS_LED_PIN          (-1)  // 独立状态 LED；本板无此功能，设为 -1 禁用
   #define AMBIENT_LIGHT_ADC_PIN   3     // 光敏检测：VDD → 光敏二极管 U2 → GPIO3 → R8(10k) → GND，亮度越高电压越高
-  #define CURRENT_ADC_PIN         0     // 电流检测
+  #define CURRENT_ADC_PIN         0     // 电流检测：INA180A1 输出（R83=150mΩ 高侧分流，GPIO0 前端 R11/R84 分压）
   #define BUTTON_PIN              9     // 本地按键 = 板载 BOOT 键(GPIO9，低电平有效)
   #define BRIGHTNESS_SUPPORTED    1
   #define AMBIENT_SUPPORTED       1
