@@ -332,6 +332,9 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         <b style="color:#007aff;" id="mdnsHint">http://espswitch-XXXX.local</b><br>
         若该地址打不开，请用上方“当前地址”里的 IP 访问（如 http://192.168.x.x）。
       </div>
+      <div class="note" id="netWarn" style="display:none;margin-top:12px;padding:10px;border:1px solid #e08;color:#c00;background:#fff5f5;border-radius:8px;line-height:1.7;">
+        <b>设备处于热点模式</b>：请用手机连接设备热点 <b>ESPSwitch-XXXX</b>（密码 12345678），浏览器打开 <b>http://192.168.4.1</b>，在此页重设家里 Wi-Fi（务必 2.4GHz）。连上后自动切到局域网。
+      </div>
     </div>
   </div>
 
@@ -397,7 +400,9 @@ async function saveWiFi() {
   const ssid = $('wifiSsid').value;
   const pwd = $('wifiPassword').value;
   if (!ssid) { alert('请填写 Wi-Fi 名称'); return; }
-  await fetch('/api/wifi?ssid=' + encodeURIComponent(ssid) + '&password=' + encodeURIComponent(pwd), {method:'POST'});
+  // 用 POST 表单体传参，避免部分 ESP32 WebServer 版本对「POST + 查询串」不解析导致密码变空
+  const body = 'ssid=' + encodeURIComponent(ssid) + '&password=' + encodeURIComponent(pwd);
+  await fetch('/api/wifi', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: body});
   $('status').innerText = '已保存，正在重启连接 Wi-Fi...';
 }
 
@@ -437,8 +442,10 @@ async function refresh() {
     $('scheduleEn').checked = d.scheduleEnabled;
     $('onTime').value = d.onTime;
     $('offTime').value = d.offTime;
-    $('netMode').innerText = (d.mode === 'sta') ? '局域网' : '热点';
+    const isAp = (d.mode !== 'sta');
+    $('netMode').innerText = isAp ? '热点' : '局域网';
     $('netIp').innerText = d.ip;
+    if ($('netWarn')) $('netWarn').style.display = (isAp || String(d.ip).startsWith('192.168.4.')) ? 'block' : 'none';
     // 按设备能力隐藏不支持的功能（ESP8285 不做亮度、不读环境光）
     if (d.brightnessSup != 1) { const bc = $('card-brightness'); if (bc) bc.style.display = 'none'; }
     if (d.ambientSup != 1) { const aw = $('ambientWrap'); if (aw) aw.style.display = 'none'; }
@@ -839,12 +846,13 @@ void setupNetwork() {
   loadWiFi();
 
   if (wifiSsid.length() > 0) {
-    Serial.print("尝试连接 Wi-Fi: ");
-    Serial.println(wifiSsid);
-    WiFi.mode(WIFI_STA);
+    // 调试：打印实际要用的 SSID 与密码原文（方括号便于看出首尾空格），用于核对 AUTH_EXPIRE 是否密码存错
+    Serial.printf("尝试连接 Wi-Fi: SSID=[%s] 密码=[%s] (长度=%d)\n", wifiSsid.c_str(), wifiPassword.c_str(), wifiPassword.length());
     char host[32];
     snprintf(host, sizeof(host), MDNS_HOST_PREFIX "%s", getMacSuffix());
-    WiFi.setHostname(host);   // 让路由器/局域网显示唯一主机名（如 espswitch-1A2B）
+    WiFi.setHostname(host);   // 须在 mode 之前设置，让路由器/局域网显示唯一主机名（如 espswitch-1A2B）
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);   // 关闭 WiFi 调制解调器休眠，避免局域网 ping 高延迟/丢包（~100ms、偶发超时）
 #ifdef ESP8266
     WiFi.persistent(true);
     WiFi.setAutoReconnect(true);   // ESP8266：SDK 层自动回连已配网络
@@ -866,16 +874,19 @@ void setupNetwork() {
       startMDNS();
       return;
     }
-    Serial.println("局域网连接失败，回退到热点模式。");
+    Serial.printf("局域网连接失败(status=%d)，回退到热点模式。\n", WiFi.status());
   }
 
   // 热点模式：用 MAC 后两字节作为唯一编号，避免多台设备热点同名冲突（如 ESPSwitch-1A2B）
   staMode = false;
   char apSsid[32];
   snprintf(apSsid, sizeof(apSsid), AP_SSID_PREFIX "%s", getMacSuffix());
-  WiFi.mode(WIFI_AP);
+  // 用 AP+STA 共存模式：这样 ensureWiFi() 里后续的 WiFi.begin() 才能真正发起 STA 连接
+  // （纯 WIFI_AP 模式下 esp_wifi_connect 会被底层拒绝，导致自动重连永远无效）
+  WiFi.mode(WIFI_AP_STA);
   WiFi.softAP(apSsid, AP_PASSWORD, AP_CHANNEL, 0, AP_MAX_CLIENTS);
   currentIP = WiFi.softAPIP().toString();
+  startMDNS();   // 热点模式也启动 mDNS：连热点时即可用 espswitch-XXXX.local 访问（IP 192.168.4.1 始终可用）
   Serial.print("热点已启动。SSID: ");
   Serial.println(apSsid);
   Serial.print("密码: ");
@@ -884,16 +895,44 @@ void setupNetwork() {
   Serial.println(currentIP);
 }
 
-// 运行时保活：已成功连上局域网(staMode==true)后若中途掉线，自动用已保存的
-// 凭证重新连接。热点模式(staMode==false)下不干预，避免 AP/STA 反复横跳。
+// 运行时保活 / 自动联网：
+// - 已连上家里 Wi-Fi(staMode==true)：仅掉线时用已保存凭证重连，保持 STA（热点不恢复）
+// - 处于热点(AP)模式(staMode==false)：每 30 秒尝试连一次已保存的家里 Wi-Fi。
+//   连上则自动切换为 STA（热点随之关闭）；连不上则保持 AP，用户仍可用 192.168.4.1 配置。
+//   这样开机首次因信号/路由 DHCP 慢而 20s 超时失败时，之后也能自动连上，无需手动重配。
 void ensureWiFi() {
   static unsigned long lastCheck = 0;
-  if (millis() - lastCheck < 5000) return;   // 每 5 秒检查一次，省 CPU
+  if (wifiSsid.length() == 0) return;        // 没配过 Wi-Fi，不重试
+  if (millis() - lastCheck < 30000) return;  // 每 30 秒尝试一次
   lastCheck = millis();
-  if (!staMode) return;
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("STA 掉线，尝试用已保存的 Wi-Fi 重连...");
-    WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str());
+
+  if (staMode) {
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("STA 掉线，尝试用已保存的 Wi-Fi 重连...");
+      WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str());
+    }
+    return;
+  }
+
+  // 当前在热点模式：尝试自动连家里 Wi-Fi
+  Serial.printf("AP 重试: SSID=[%s] 密码=[%s]\n", wifiSsid.c_str(), wifiPassword.c_str());
+  WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str());
+  unsigned long t = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - t < 8000) {
+    delay(300);
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    staMode = true;
+    WiFi.mode(WIFI_STA);   // 连上后关掉热点，纯 STA
+    WiFi.setSleep(false);   // 关掉休眠，保证 Web/ping 响应及时
+    currentIP = WiFi.localIP().toString();
+    startMDNS();
+    Serial.println("自动连接家里 Wi-Fi 成功，切换为 STA。IP: " + currentIP);
+  } else {
+    // 未连上：保持 AP 模式，热点仍在，用户仍可用 192.168.4.1 配置
+    // 状态码参考(WL_*)：1=无SSID/未配 2=扫描中 3=连接中 4=连接失败 5=丢失 255=无形态
+    // 常见 4(连接失败)=密码错或信号太弱；找不到网络多为路由器仅5G(ESP32-C3只支持2.4G)
+    Serial.printf("自动连接家里 Wi-Fi 失败(status=%d)，保持热点。请检查 2.4G/密码/信号。\n", WiFi.status());
   }
 }
 
@@ -977,6 +1016,11 @@ void handleWiFiConfig() {
   if (ssid.length() == 0) {
     server.send(400, "text/plain", "SSID 不能为空");
     return;
+  }
+  // 密码留空表示「不修改」，保留已保存的密码（避免误清空导致永远连不上）
+  if (password.length() == 0) {
+    loadWiFi();
+    password = wifiPassword;
   }
   saveWiFi(ssid, password);
   server.send(200, "text/plain", "已保存，设备即将重启连接 Wi-Fi");
