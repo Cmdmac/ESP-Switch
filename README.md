@@ -49,49 +49,45 @@ ESP 通断器固件，支持网页控制。基于 Arduino 框架，同一份代�
 
 ## 开发环境
 
-- [Arduino IDE](https://www.arduino.cc/en/software) 或 [PlatformIO](https://platformio.org/)
-- ESP32 芯片：ESP32 Arduino Core（建议 2.0.14+ 或 3.x）
-- ESP8285 芯片：ESP8266 Arduino Core（`esp8266 by ESP8266 Community`）
+> 📄 **新机器部署**：完整的安装步骤（两套编译链、路径修改、常见坑）见 **[DEPLOY.md](DEPLOY.md)**。
 
-> 同一份 `ESP32_Light_Switch.ino` 通过 `#ifdef ESP8266` 适配两套核心，并通过 `-DBOARD_XXX` 选择具体产品板的引脚/功能：选 ESP32 开发板时用 ESP32 核心，选 ESP8285 开发板时用 ESP8266 核心，再用对应宏选定板型，无需切换文件。
+本项目固件按目标芯片分两条编译链：
 
-### 安装 ESP32 开发板包
+| 目标芯片 | 编译链 | 说明 |
+|---|---|---|
+| ESP32-C3 / ESP8285 / ESP8266 | arduino-cli + esp32(3.x)/esp8266 core | 网页 Tab1「Arduino CLI」 |
+| ESP32-C2 | **ESP-IDF 5.3.x + arduino-esp32 作组件** | 网页 Tab2「ESP32-C2」 |
 
-在 Arduino IDE 中：
+- **C2 为什么走 IDF**：arduino-esp32 3.x 删掉了 `esp32c2-libs` 预编译包，arduino-cli/PIO 无法直接编 C2；把 arduino-esp32 作为 **ESP-IDF 组件**编译时，bootloader/SDK 由 IDF 5.3.2 生成，绕开缺失的包。C2 板型因此**只出现在网页 Tab2**（Tab1 下拉不含 C2）。
+- **同一份源码、两条编译链**：`ESP32_Light_Switch.ino` 是唯一固件源码（arduino-cli 直接编译）；`idf-c2/main/main.cpp` 是薄壳，`#include` 同一份 `.ino` + 自写 `app_main()`。改固件只改 `.ino`，两边编译都生效。
+- C3/8285 板在 arduino 路径选板后，用 `-DBOARD_XXX` 宏决定引脚/功能（网页控制台自动注入宏）。
 
-1. 文件 → 首选项 → 附加开发板管理器网址，添加：
-   ```
-   https://dl.espressif.com/dl/package_esp32_index.json
-   ```
-2. 工具 → 开发板 → 开发板管理器，搜索并安装 **ESP32 by Espressif Systems**
+### 网页控制台（推荐）
 
-### 安装 ESP8266 开发板包（ESP8285 用）
+```bash
+cd arduino-cli-web && node server.js   # 打开 http://localhost:8787
+```
 
-1. 文件 → 首选项 → 附加开发板管理器网址，追加（与上面用逗号分隔）：
-   ```
-   https://arduino.esp8266.com/stable/package_esp8266com_index.json
-   ```
-2. 工具 → 开发板 → 开发板管理器，搜索并安装 **esp8266 by ESP8266 Community**
+- Tab1「Arduino CLI」：C3 / 8285 等 5 个产品板的编译、上传、串口监视、日志、固件下载。
+- Tab2「ESP32-C2」：C2 三个子板的 `idf.py` 构建 / 烧录（实时日志）。
+- Tab3「构建产物」：按板型分组展示所有编译产物 + 生成时间，可直接下载。
+- 首次使用若报 `Cannot import module "click"` 等，先跑 `DEPLOY.md` 第 3 步安装 IDF，并核对 `server.js` 顶部 4 处路径。
 
-### 选择开发板
+### 手动编译（不依赖网页）
 
-#### ESP32-C2 / ESP32-C3
+```bash
+# C3（arduino-cli）
+arduino-cli compile --fqbn esp32:esp32:esp32c3 \
+  --build-property build.defines=-DBOARD_ESP32C3_SWITCH ESP32_Light_Switch
 
-- 开发板：**ESP32C2 Dev Module** / **ESP32C3 Dev Module**（或对应 DevKitM-1）
-- Partition Scheme：默认即可（C3/C2 多为 4MB Flash）
-- Upload Speed：921600
+# ESP8285（arduino-cli，宏注入走 build.extra_flags）
+arduino-cli compile --fqbn esp8266:esp8266:generic \
+  --build-property build.extra_flags=-DBOARD_ESP8285_SWITCH ESP32_Light_Switch
 
-#### ESP8285
-
-- 开发板：**Generic ESP8285 Module**（ESP8266 核心）
-- Flash Size：**1M (128K SPIFFS)** 或带 OTA 的方案（见下方 OTA 说明）
-- Flash Mode：**DOUT**（ESP8285 内置 Flash 必须以 DOUT 模式烧录，否则下载后无法启动）
-- Upload Speed：921600
-- CPU Frequency：80 MHz 或 160 MHz 均可
-
-本代码使用通用 GPIO/ADC/PWM API，C2 和 C3 均可直接编译；ESP8285 走 ESP8266 分支（无 LEDC、用 EEPROM 持久化、单 ADC）。
-
-> 同一芯片可有多个产品板（如 ESP32-C2 有 Nano / Dev / Module 三块），它们共用 `esp32:esp32:esp32c2` 这个 FQBN，区别仅在于 `-DBOARD_XXX` 宏决定的引脚。
+# C2（ESP-IDF）
+cd idf-c2 && . ~/esp/esp-idf/export.sh
+IDF_C2_BOARD=BOARD_ESP32C2_SWITCH_NANO idf.py -B build/BOARD_ESP32C2_SWITCH_NANO build
+```
 
 ## 上传步骤
 
@@ -136,9 +132,10 @@ ESP 通断器固件，支持网页控制。基于 Arduino 框架，同一份代�
 
 ### 分区方案要求
 
-OTA 需要 Flash 上有至少两个 App 分区（factory / ota_0 / ota_1）。请在 Arduino IDE 中：
+OTA 需要 Flash 上有至少两个 App 分区（factory / ota_0 / ota_1）。
 
-- **ESP32-C3 / C2**：工具 → Partition Scheme → 选择带 OTA 的方案，例如 `Default 4MB with spiffs`（含 OTA 双分区）。若选了「Minimal / No OTA」类方案，`Update.begin()` 会因空间不足而失败。
+- **ESP32-C3（arduino 路径）**：工具 → Partition Scheme → 选择带 OTA 的方案，例如 `Default 4MB with spiffs`（含 OTA 双分区）。若选了「Minimal / No OTA」类方案，`Update.begin()` 会因空间不足而失败。
+- **ESP32-C2（IDF 路径）**：无需配置 —— `idf-c2/partitions.csv` 已内置含 otadata 的 4MB 双 OTA 分区（factory/ota_0/ota_1 各 1.25MB），`sdkconfig.defaults` 锁定 4MB flash。
 - **ESP8285（1MB Flash）**：OTA 空间很紧张。选 `Flash Size: 1M (128K SPIFFS)` 时通常**不带** OTA 分区；需选带 OTA 的 1MB 方案（如 `1M (512K+512K OTA)` 之类，具体取决于板包菜单）。1MB 下固件+网页字符串+Wi-Fi 栈已偏满，OTA 可能无法容纳较大固件；若 OTA 失败，请改用 USB 串口烧录。
 
 > 安全提示：OTA 接口当前无任何鉴权，仅适合在受信任的局域网/热点下使用。若设备暴露在公网，请自行增加认证。

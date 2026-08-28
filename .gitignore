@@ -73,3 +73,15 @@ Testing/
 
 # WorkBuddy internal memory (not part of the project)
 .workbuddy/
+
+# PlatformIO build artifacts
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# ESP-IDF (idf-c2) build artifacts & generated config
+idf-c2/build/
+idf-c2/managed_components/
+idf-c2/sdkconfig
+idf-c2/sdkconfig.old
+idf-c2/dependencies.lock

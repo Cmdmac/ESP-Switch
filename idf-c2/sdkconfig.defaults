@@ -1,0 +1,33 @@
+# idf.py 工程默认配置 —— ESP32-C2，Arduino 作为 ESP-IDF 组件编译
+# 说明：
+#  - arduino-esp32 3.3.11 要求 IDF 版本在 [5.3.0, 6.1.99]，本机 IDF 为 5.3.2，满足。
+#  - AUTOSTART_ARDUINO 默认 n：组件模式不自带 app_main，由 main/main.cpp 提供。
+#  - ARDUINO_VARIANT 默认 = IDF_TARGET，故 target=esp32c2 即自动选用 variants/esp32c2。
+
+CONFIG_IDF_TARGET="esp32c2"
+CONFIG_ARDUINO_VARIANT="esp32c2"
+
+# arduino-esp32 硬性要求：CONFIG_FREERTOS_HZ 必须为 1000（否则构建直接 FATAL_ERROR）
+CONFIG_FREERTOS_HZ=1000
+
+# 组件模式手动提供 app_main（见 main/main.cpp）：关闭 arduino 自带的 AUTOSTART，
+# 避免 arduino 的 cores/esp32/main.cpp 也生成 app_main 导致重复符号。
+CONFIG_AUTOSTART_ARDUINO=n
+
+# C2 为单核，主任务栈需够大（WebServer + WiFi + 大量 String 操作）
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+
+# C2 无原生 USB，关闭 Arduino USB-CDC/USB-MSC 相关启动项，避免编译/启动异常
+CONFIG_ARDUINO_USB_CDC_ON_BOOT=n
+CONFIG_ARDUINO_USB_MODE=n
+
+# OTA 双分区表（配合 WebServer 的 /update 网页升级）
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+
+# 4MB Flash（ESP32-C2 常见配置）
+# 注意：键名是 FLASHSIZE（无 _SIZE），写错会被 IDF 静默忽略、退回默认 2MB
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# 默认开启 NVS（Preferences 持久化依赖）
+CONFIG_NVS_FLASH=y

@@ -1,0 +1,13 @@
+# ESP32-C2 分区表（4MB Flash，网页 OTA 双分区）
+# 注意：
+#  - app 分区必须 64KB(0x10000) 对齐；data 分区 4KB 对齐即可。
+#  - otadata(data,ota) 必须有：bootloader 用它记录当前活跃 OTA 分区，缺了网页升级无效。
+#  - factory 初始烧录，之后 /update 升级落在 ota_0/ota_1 交替，bootloader 自动选择。
+#  - 每个 app 分区 0x140000(1.25MB)。若 arduino 固件超过此尺寸，请改 FLASH_SIZE 为 8MB 或改用 2 分区 OTA 布局。
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x4000,
+otadata,  data, ota,     0xd000,   0x2000,
+phy_init, data, phy,     0xf000,   0x1000,
+factory,  app,  factory, 0x10000,  0x140000,
+ota_0,    app,  ota_0,   0x150000, 0x140000,
+ota_1,    app,  ota_1,   0x290000, 0x140000,

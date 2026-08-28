@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>arduino-cli 网页控制台</title>
+<title>ESP-Switch 网页控制台</title>
 <style>
   :root {
     --bg: #f5f6f8;
@@ -71,12 +71,41 @@
     .twocol { flex-direction: column; }
     .twocol .fwcard { flex: 1 1 auto; position: static; }
   }
+  /* ---- Tab 切换 ---- */
+  .tabbar {
+    display: flex; gap: 4px; margin-bottom: 16px;
+    border-bottom: 2px solid var(--border); padding-bottom: 0;
+  }
+  .tab {
+    padding: 9px 18px; border: none; border-radius: 8px 8px 0 0;
+    background: transparent; color: var(--muted); font-size: 14px;
+    cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -2px;
+  }
+  .tab:hover { background: #eef2ff; color: var(--primary-d); }
+  .tab.active {
+    color: var(--primary); font-weight: 600;
+    border-bottom-color: var(--primary); background: #fff;
+  }
+  .tab-panel[hidden] { display: none; }
+  .tab-panel { min-width: 0; }
+  /* ---- 构建产物 Tab：板型名 / 文件名 / 大小 加强可读性 ---- */
+  .art-group-title { font-size: 16px; font-weight: 700; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+  .art-file-name { font-family: var(--mono); font-size: 15px; font-weight: 600; word-break: break-all; }
+  .art-file-size { font-size: 15px; font-weight: 700; color: var(--primary); margin-left: 10px; }
+  .art-file-time { font-size: 12px; color: var(--muted); margin-top: 2px; }
 </style>
 </head>
 <body>
-  <h1>arduino-cli 网页控制台</h1>
-  <div class="sub">本地 Node 服务直接调用 arduino-cli —— 不用再敲命令 <span id="clistatus" class="pill">检测中…</span></div>
+  <h1>ESP-Switch 网页控制台</h1>
+  <div class="sub">本地 Node 服务统一驱动 arduino-cli / ESP-IDF 两套编译链 —— 编译 · 烧写 · 监视 · 产物管理全在网页完成 <span id="clistatus" class="pill">检测中…</span></div>
 
+  <div class="tabbar">
+    <button class="tab active" data-tab="arduino" id="tabArduino">Arduino CLI（5 产品板）</button>
+    <button class="tab" data-tab="idf" id="tabIdf">ESP32-C2（ESP-IDF）</button>
+    <button class="tab" data-tab="artifacts" id="tabArtifacts">构建产物</button>
+  </div>
+
+  <div class="tab-panel" id="panel-arduino">
   <div class="card">
     <div class="row">
       <div class="field">
@@ -104,6 +133,7 @@
       <button id="btnUpload">② 编译并上传</button>
       <button id="btnMonitor" class="ghost">③ 开始监视</button>
       <button id="btnStop" class="ghost" disabled>④ 停止监视</button>
+      <button id="btnClear" class="ghost">清空日志</button>
     </div>
   </div>
 
@@ -111,14 +141,74 @@
     <div class="card logcard">
       <div class="log-head">实时日志 <span id="runlabel"></span></div>
       <pre id="log"></pre>
-      <div class="btns" style="margin-top:10px;">
-        <button class="ghost" id="btnClear">清空日志</button>
-      </div>
     </div>
 
     <div class="card fwcard" id="fwcard">
       <div class="log-head">编译产物（固件）</div>
       <div id="fwlist"><div class="fw-size">（编译成功后在此显示固件名 / 大小，并提供下载）</div></div>
+    </div>
+  </div>
+  </div><!-- /panel-arduino -->
+
+  <div class="tab-panel" id="panel-idf" hidden>
+  <div class="card">
+    <div class="log-head">ESP32-C2（ESP-IDF 构建 · 复用本机 IDF 5.3.2 + arduino-esp32 3.3.11 组件）</div>
+    <div class="row">
+      <div class="field">
+        <label>C2 产品板</label>
+        <select id="idfboard"></select>
+      </div>
+      <div class="field">
+        <label>烧录端口</label>
+        <select id="idfport"></select>
+      </div>
+      <div class="field">
+        <label>监视波特率</label>
+        <input type="number" id="idfbaud" value="115200" style="min-width:120px;" />
+      </div>
+      <div class="field">
+        <label>&nbsp;</label>
+        <span class="check"><input type="checkbox" id="idfsettarget" checked /> 每次 set-target esp32c2</span>
+      </div>
+    </div>
+    <div class="btns">
+      <button id="btnIdfBuild">构建 C2 (idf.py build)</button>
+      <button id="btnIdfFlash" class="ghost">构建并烧录</button>
+      <button id="btnIdfMonitor" class="ghost">开始监视</button>
+      <button id="btnIdfStop" class="ghost" disabled>停止监视</button>
+      <button id="btnIdfClear" class="ghost">清空日志</button>
+    </div>
+  </div>
+
+  <div class="twocol">
+    <div class="card logcard">
+      <div class="log-head">C2 实时日志 <span id="idfrunlabel"></span></div>
+      <pre id="idflog" style="background:#0f172a;color:#e2e8f0;font-family:var(--mono);font-size:12.5px;padding:12px;border-radius:8px;min-height:360px;height:62vh;overflow:auto;white-space:pre-wrap;word-break:break-all;margin:0;"></pre>
+    </div>
+    <div class="card fwcard">
+      <div class="log-head">C2 编译产物（.bin）</div>
+      <div id="idfwlist"><div class="fw-size">（构建成功后在此显示 .bin 并提供下载）</div></div>
+    </div>
+  </div>
+  </div><!-- /panel-idf -->
+
+  <div class="tab-panel" id="panel-artifacts" hidden>
+    <div class="card">
+      <div class="row" style="justify-content:space-between; align-items:center;">
+        <div class="log-head" style="margin:0;">全部板型编译产物（含生成时间）</div>
+        <div style="display:flex; gap:8px; align-items:flex-end;">
+          <div class="field">
+            <label>烧写端口</label>
+            <select id="artport"></select>
+          </div>
+          <button class="ghost" id="btnArtifactsRefresh">刷新</button>
+        </div>
+      </div>
+    </div>
+    <div id="artlist"><div class="fw-size" style="padding:12px;">（加载中…）</div></div>
+    <div class="card" id="artflashcard" hidden>
+      <div class="log-head">烧写日志 <span id="artrunlabel"></span></div>
+      <pre id="artlog" style="background:#0f172a;color:#e2e8f0;font-family:var(--mono);font-size:12.5px;padding:12px;border-radius:8px;min-height:120px;height:28vh;overflow:auto;white-space:pre-wrap;word-break:break-all;margin:0;"></pre>
     </div>
   </div>
 
@@ -149,8 +239,16 @@ async function loadMeta() {
   try {
     const s = await (await fetch('/api/status')).json();
     const dot = $('clistatus');
-    if (s.cliExists) { dot.textContent = 'arduino-cli ✓ ' + s.cli; dot.className = 'pill'; dot.style.background='#dcfce7'; dot.style.color='#166534'; }
-    else { dot.textContent = '未找到 arduino-cli'; dot.style.background='#fee2e2'; dot.style.color='#991b1b'; }
+    const parts = [];
+    parts.push(s.cliExists ? 'arduino-cli ✓' : 'arduino-cli ✗');
+    parts.push(s.idfExists ? 'IDF ✓' : 'IDF ✗');
+    parts.push(s.idfVenvExists ? 'venv ✓' : 'venv ✗');
+    dot.textContent = parts.join(' · ');
+    dot.className = 'pill';
+    const allOk = s.cliExists && s.idfExists && s.idfVenvExists;
+    if (allOk) { dot.style.background='#dcfce7'; dot.style.color='#166534'; }
+    else { dot.style.background='#fee2e2'; dot.style.color='#991b1b'; }
+    dot.title = (s.idfDir || '') + '\n' + (s.idfVenv || '');
   } catch(e) { }
   // boards
   try {
@@ -159,6 +257,11 @@ async function loadMeta() {
     syncBoardMacro();
   } catch(e) {}
   refreshPorts();
+  // C2 boards
+  try {
+    const c = await (await fetch('/api/idf/boards')).json();
+    $('idfboard').innerHTML = c.boards.map(x => `<option value="${x.macro}" data-macro="${x.macro}">${x.name}</option>`).join('');
+  } catch(e) {}
 }
 
 // 产品板下拉变化：记录对应的 BOARD_XXX 宏，编译/上传时注入 -D<macro>
@@ -172,9 +275,12 @@ async function refreshPorts() {
   try {
     const r = await (await fetch('/api/ports')).json();
     const cur = $('port').value;
-    $('port').innerHTML = (r.ports.length ? r.ports : ['（无端口，请插板子后点刷新）'])
+    const html = (r.ports.length ? r.ports : ['（无端口，请插板子后点刷新）'])
       .map(p => `<option value="${p}">${p}</option>`).join('');
-    if (cur) $('port').value = cur;
+    $('port').innerHTML = html;
+    $('idfport').innerHTML = html;
+    $('artport').innerHTML = html;
+    if (cur) { $('port').value = cur; $('idfport').value = cur; $('artport').value = cur; }
   } catch(e) {}
 }
 
@@ -282,6 +388,212 @@ function showFirmware(d) {
   html += '</div>';
   $('fwlist').innerHTML = html;
 }
+
+// ===== ESP32-C2 / ESP-IDF 构建流（独立于 arduino 部分，各自日志） =====
+const idfLogEl = $('idflog');
+let idfBusy = false;
+function appendIdf(cls, text) {
+  const atBottom = idfLogEl.scrollHeight - idfLogEl.scrollTop - idfLogEl.clientHeight < 40;
+  (Array.isArray(text) ? text : String(text).split('\n')).forEach(line => {
+    if (line === '') return;
+    const span = document.createElement('div');
+    span.className = 'log-' + cls;
+    span.textContent = '[' + ts() + '] ' + line;
+    idfLogEl.appendChild(span);
+  });
+  if (atBottom) idfLogEl.scrollTop = idfLogEl.scrollHeight;
+}
+function idfBoardMacro() {
+  const o = $('idfboard').selectedOptions[0];
+  return o ? (o.dataset.macro || o.value) : '';
+}
+function setIdfBusy(v) {
+  idfBusy = v;
+  $('btnIdfBuild').disabled = v;
+  $('btnIdfFlash').disabled = v;
+}
+function runIdfStream(url, label, onDone) {
+  appendIdf('sys', '▶ ' + label + ' 开始…');
+  $('idfrunlabel').textContent = '（' + label + ' 进行中）';
+  const es = new EventSource(url);
+  es.addEventListener('start', e => appendIdf('sys', 'CLI: ' + JSON.parse(e.data).cli));
+  es.addEventListener('out', e => appendIdf('out', JSON.parse(e.data)));
+  es.addEventListener('err', e => appendIdf('err', JSON.parse(e.data)));
+  es.addEventListener('firmware', e => { try { showIdfFirmware(JSON.parse(e.data)); } catch (_) {} });
+  es.addEventListener('done', e => {
+    const d = JSON.parse(e.data);
+    appendIdf(d.code === 0 ? 'done' : 'err', (d.code === 0 ? '✔ ' : '✘ ') + label + ' 结束，退出码 ' + d.code);
+    $('idfrunlabel').textContent = '';
+    es.close();
+    setIdfBusy(false);
+    if (onDone) onDone(d.code);
+  });
+  es.onerror = () => { appendIdf('err', '⚠ EventSource 连接断开'); es.close(); setIdfBusy(false); if (onDone) onDone(-1); };
+  return es;
+}
+function showIdfFirmware(d) {
+  if (!d || !d.files || !d.files.length) { $('idfwlist').innerHTML = '<div class="fw-size">（本次构建未生成 .bin 产物）</div>'; return; }
+  let html = '<div style="display:flex;flex-direction:column;gap:8px;">';
+  d.files.forEach(f => {
+    const url = `/api/idf/download?board=${encodeURIComponent(d.board || '')}&file=${encodeURIComponent(f.name)}`;
+    html += `<div class="fw-item"><div class="fw-info"><div class="fw-name">${f.name}</div><div class="fw-size">${fmtSize(f.size)}</div></div><a href="${url}" class="dlbtn" download>下载</a></div>`;
+  });
+  html += '</div>';
+  $('idfwlist').innerHTML = html;
+}
+$('btnIdfBuild').onclick = () => {
+  if (idfBusy) return;
+  setIdfBusy(true);
+  const board = idfBoardMacro();
+  const settarget = $('idfsettarget').checked ? '1' : '0';
+  runIdfStream(`/api/stream/idfbuild?board=${encodeURIComponent(board)}&action=build&settarget=${settarget}`, 'C2 构建', null);
+};
+$('btnIdfFlash').onclick = () => {
+  if (idfBusy) return;
+  const port = $('idfport').value;
+  if (!port || port.startsWith('（')) { appendIdf('err', '请先选择有效端口'); return; }
+  setIdfBusy(true);
+  const board = idfBoardMacro();
+  const settarget = $('idfsettarget').checked ? '1' : '0';
+  runIdfStream(`/api/stream/idfbuild?board=${encodeURIComponent(board)}&action=flash&port=${encodeURIComponent(port)}&settarget=${settarget}`, 'C2 构建并烧录', null);
+};
+$('btnIdfClear').onclick = () => { idfLogEl.innerHTML = ''; };
+
+// ---- IDF 串口监视（独立于构建 busy） ----
+let idfMonitorES = null;
+function setIdfMonitorButtons(v) {
+  $('btnIdfMonitor').disabled = v;
+  $('btnIdfStop').disabled = !v;
+}
+$('btnIdfMonitor').onclick = () => {
+  const port = $('idfport').value;
+  if (!port || port.startsWith('（')) { appendIdf('err', '请先选择有效端口'); return; }
+  if (idfMonitorES) return;
+  const baud = $('idfbaud').value || '115200';
+  appendIdf('sys', '▶ 监视 ' + port + ' @ ' + baud);
+  setIdfMonitorButtons(true);
+  idfMonitorES = runIdfStream(`/api/stream/idfmonitor?port=${encodeURIComponent(port)}&baud=${encodeURIComponent(baud)}`, '监视', () => {
+    idfMonitorES = null;
+    setIdfMonitorButtons(false);
+  });
+};
+$('btnIdfStop').onclick = () => {
+  if (idfMonitorES) { idfMonitorES.close(); idfMonitorES = null; }
+  appendIdf('sys', '■ 已请求停止监视');
+  setIdfMonitorButtons(false);
+};
+
+// ===== Tab 切换：Arduino CLI / ESP32-C2 (ESP-IDF) / 构建产物 =====
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  document.getElementById('panel-arduino').hidden = (name !== 'arduino');
+  document.getElementById('panel-idf').hidden = (name !== 'idf');
+  document.getElementById('panel-artifacts').hidden = (name !== 'artifacts');
+  if (name === 'artifacts') loadArtifacts();
+}
+$('tabArduino').onclick = () => switchTab('arduino');
+$('tabIdf').onclick = () => switchTab('idf');
+$('tabArtifacts').onclick = () => switchTab('artifacts');
+$('btnArtifactsRefresh').onclick = loadArtifacts;
+
+// ===== 构建产物 Tab：按板型分组显示固件 + 生成时间 =====
+function fmtTime(ms) {
+  if (!ms) return '—';
+  const d = new Date(ms);
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+async function loadArtifacts() {
+  const box = $('artlist');
+  box.innerHTML = '<div class="fw-size" style="padding:12px;">（加载中…）</div>';
+  let data;
+  try { data = await (await fetch('/api/artifacts')).json(); } catch (e) {
+    box.innerHTML = '<div class="fw-size" style="padding:12px;">⚠ 加载失败：' + e.message + '</div>';
+    return;
+  }
+  const list = data.artifacts || [];
+  if (!list.length) {
+    box.innerHTML = '<div class="fw-size" style="padding:12px;">（还没有任何编译产物 —— 先在对应 Tab 编译一次）</div>';
+    return;
+  }
+  let html = '';
+  list.forEach(g => {
+    const tag = g.type === 'idf' ? '<span class="pill" style="background:#fef3c7;color:#92400e;font-size:12px;padding:3px 10px;">IDF</span>'
+                                : '<span class="pill" style="background:#dcfce7;color:#166534;font-size:12px;padding:3px 10px;">Arduino</span>';
+    html += `<div class="card" style="margin-bottom:12px;">
+      <div class="art-group-title">${tag} ${g.boardName}</div>
+      <div style="display:flex;flex-direction:column;gap:8px;">`;
+    g.files.forEach(f => {
+      let url;
+      if (g.type === 'idf') url = `/api/idf/download?board=${encodeURIComponent(g.board)}&file=${encodeURIComponent(f.name)}`;
+      else url = `/api/download?fqbn=${encodeURIComponent(g.fqbn)}&board=${encodeURIComponent(g.board)}&file=${encodeURIComponent(f.name)}`;
+      // 刷写按钮：按产物所属板型走正确工具（arduino: arduino-cli upload --input-dir；idf: idf.py -B flash）
+      const fdata = `data-type="${g.type}" data-fqbn="${encodeURIComponent(g.fqbn || '')}" data-board="${encodeURIComponent(g.board)}" data-name="${encodeURIComponent(f.name)}"`;
+      html += `<div class="fw-item">
+        <div class="fw-info">
+          <div class="art-file-name">${f.name}<span class="art-file-size">${fmtSize(f.size)}</span></div>
+          <div class="art-file-time">生成于 ${fmtTime(f.mtime)}</div>
+        </div>
+        <div style="display:flex;gap:8px;flex-shrink:0;">
+          <button class="ghost flashbtn" ${fdata} title="把该板型的编译产物烧写到所选串口（不重新编译）">刷写</button>
+          <a href="${url}" class="dlbtn" download>下载</a>
+        </div>
+      </div>`;
+    });
+    html += '</div></div>';
+  });
+  box.innerHTML = html;
+}
+
+// ===== 产物刷写到串口（SSE 流式日志） =====
+const artLogEl = $('artlog');
+let artFlashBusy = false;
+function appendArt(cls, text) {
+  const atBottom = artLogEl.scrollHeight - artLogEl.scrollTop - artLogEl.clientHeight < 40;
+  (Array.isArray(text) ? text : String(text).split('\n')).forEach(line => {
+    if (line === '') return;
+    const span = document.createElement('div');
+    span.className = 'log-' + cls;
+    span.textContent = '[' + ts() + '] ' + line;
+    artLogEl.appendChild(span);
+  });
+  if (atBottom) artLogEl.scrollTop = artLogEl.scrollHeight;
+}
+function flashArtifact(btn) {
+  if (artFlashBusy) { appendArt('sys', '⚠ 已有烧写任务进行中'); return; }
+  const port = $('artport').value;
+  if (!port || port.startsWith('（')) { appendArt('err', '请先选择有效烧写端口'); $('artflashcard').hidden = false; return; }
+  const type = btn.dataset.type;
+  const fqbn = decodeURIComponent(btn.dataset.fqbn || '');
+  const board = decodeURIComponent(btn.dataset.board);
+  const name = decodeURIComponent(btn.dataset.name || '');
+  $('artflashcard').hidden = false;
+  artLogEl.innerHTML = '';
+  artFlashBusy = true;
+  btn.disabled = true;
+  const label = '烧写 ' + name + ' → ' + board;
+  appendArt('sys', '▶ ' + label + ' 开始…');
+  $('artrunlabel').textContent = '（烧写中…）';
+  const params = `type=${encodeURIComponent(type)}&fqbn=${encodeURIComponent(fqbn)}&board=${encodeURIComponent(board)}&port=${encodeURIComponent(port)}`;
+  const es = new EventSource('/api/stream/flash?' + params);
+  es.addEventListener('start', e => appendArt('sys', 'CLI: ' + JSON.parse(e.data).cli));
+  es.addEventListener('out', e => appendArt('out', JSON.parse(e.data)));
+  es.addEventListener('err', e => appendArt('err', JSON.parse(e.data)));
+  es.addEventListener('done', e => {
+    const d = JSON.parse(e.data);
+    appendArt(d.code === 0 ? 'done' : 'err', (d.code === 0 ? '✔ ' : '✘ ') + label + ' 结束，退出码 ' + d.code);
+    $('artrunlabel').textContent = '';
+    es.close();
+    artFlashBusy = false;
+    document.querySelectorAll('.flashbtn').forEach(b => b.disabled = false);
+  });
+  es.onerror = () => { appendArt('err', '⚠ EventSource 连接断开'); es.close(); artFlashBusy = false; document.querySelectorAll('.flashbtn').forEach(b => b.disabled = false); };
+}
+// 事件委托：产物列表里的刷写按钮（列表会动态刷新）
+document.addEventListener('click', e => {
+  const b = e.target.closest('.flashbtn');
+  if (b) flashArtifact(b);
+});
 
 loadMeta();
 </script>

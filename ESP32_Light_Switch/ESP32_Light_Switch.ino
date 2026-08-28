@@ -667,7 +667,7 @@ uint16_t timeStrToMinutes(const String& t) {
 }
 
 String minutesToTimeStr(uint16_t mins) {
-  char buf[6];
+  char buf[12];
   snprintf(buf, sizeof(buf), "%02d:%02d", mins / 60, mins % 60);
   return String(buf);
 }
