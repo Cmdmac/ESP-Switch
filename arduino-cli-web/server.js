@@ -45,9 +45,11 @@ function findIdfDir() {
   if (process.env.ESP_SWITCH_IDF_DIR) return process.env.ESP_SWITCH_IDF_DIR;
   const marker = isWin() ? 'export.bat' : 'export.sh';
   if (process.env.IDF_PATH && fs.existsSync(path.join(process.env.IDF_PATH, marker))) return process.env.IDF_PATH;
-  // 常见安装根：IDF_TOOLS_PATH/frameworks（官方安装器）、~/esp、~/esp-idf、/opt
+  // 常见安装根：IDF_TOOLS_PATH/frameworks（官方安装器）、~/.espressif（eim 布局）、
+  // ~/esp、~/esp-idf、/opt
   const roots = [
     process.env.IDF_TOOLS_PATH && path.join(process.env.IDF_TOOLS_PATH, 'frameworks'),
+    path.join(os.homedir(), '.espressif'),
     path.join(os.homedir(), 'esp'),
     path.join(os.homedir(), 'esp-idf'),
     '/opt',

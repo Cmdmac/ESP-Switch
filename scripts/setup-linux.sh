@@ -23,6 +23,22 @@ command -v dnf     >/dev/null 2>&1 && HAVE_DNF=1
 command -v yum     >/dev/null 2>&1 && HAVE_YUM=1
 command -v brew    >/dev/null 2>&1 && HAVE_BREW=1
 
+# 下载工具：官方安装脚本内部依赖 curl，缺失时自动用包管理器补上
+ensure_curl() {
+  if command -v curl >/dev/null 2>&1; then return 0; fi
+  warn "未检测到 curl，尝试自动安装 ..."
+  if [ $HAVE_APT -eq 1 ]; then
+    sudo apt-get update -qq && sudo apt-get install -y -qq curl && return 0
+  elif [ $HAVE_DNF -eq 1 ]; then
+    sudo dnf install -y curl && return 0
+  elif [ $HAVE_YUM -eq 1 ]; then
+    sudo yum install -y curl && return 0
+  elif [ $HAVE_BREW -eq 1 ]; then
+    brew install curl && return 0
+  fi
+  return 1
+}
+
 # ---------- 1. Node.js ----------
 echo; echo "[1/5] Node.js"
 if command -v node >/dev/null 2>&1; then
@@ -39,7 +55,7 @@ else
     [ -s "$HOME/.nvm/nvm.sh" ] && . "$HOME/.nvm/nvm.sh"
     nvm install --lts >/dev/null 2>&1 && nvm use --lts >/dev/null 2>&1
     command -v node >/dev/null 2>&1 && ok "Node.js 已通过 nvm 安装: $(node --version)" || fail "nvm 安装失败"
-  elif command -v curl >/dev/null 2>&1; then
+  elif ensure_curl; then
     echo "    使用 nvm 官方脚本安装（推荐）..."
     curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
     # shellcheck disable=SC1091
@@ -64,7 +80,7 @@ if command -v arduino-cli >/dev/null 2>&1; then
   ok "arduino-cli 已安装: $(arduino-cli version 2>/dev/null | head -1)"
 else
   warn "未检测到 arduino-cli，使用官方脚本安装 ..."
-  if command -v curl >/dev/null 2>&1; then
+  if ensure_curl; then
     curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
     # 官方脚本装到 ~/bin 或 /usr/local/bin
     export PATH="$HOME/bin:$PATH"
@@ -75,7 +91,7 @@ else
       fail "安装失败，请手动安装：https://github.com/arduino/arduino-cli/releases"
     fi
   else
-    fail "缺少 curl，请先安装 curl 后重试"
+    fail "缺少 curl 且无法自动安装，请手动执行 sudo apt install curl 后重试"
   fi
 fi
 
@@ -134,6 +150,11 @@ elif [ -d "$HOME/esp/esp-idf" ] && [ -f "$HOME/esp/esp-idf/export.sh" ]; then
   IDF_HOME="$HOME/esp/esp-idf"
 elif [ -d "/opt/esp-idf" ] && [ -f "/opt/esp-idf/export.sh" ]; then
   IDF_HOME="/opt/esp-idf"
+else
+  # eim（ESP-IDF Installation Manager）布局：~/.espressif/<版本>/esp-idf
+  for cand in "$HOME"/.espressif/*/esp-idf; do
+    if [ -f "$cand/export.sh" ]; then IDF_HOME="$cand"; fi
+  done
 fi
 if [ -n "$IDF_HOME" ]; then
   ok "ESP-IDF 已安装: $IDF_HOME"
