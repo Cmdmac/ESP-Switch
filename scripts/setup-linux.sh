@@ -23,20 +23,42 @@ command -v dnf     >/dev/null 2>&1 && HAVE_DNF=1
 command -v yum     >/dev/null 2>&1 && HAVE_YUM=1
 command -v brew    >/dev/null 2>&1 && HAVE_BREW=1
 
-# 下载工具：官方安装脚本内部依赖 curl，缺失时自动用包管理器补上
-ensure_curl() {
-  if command -v curl >/dev/null 2>&1; then return 0; fi
-  warn "未检测到 curl，尝试自动安装 ..."
+# sudo 前置处理：需要密码时先提示，避免用户以为脚本卡死（密码不回显）
+SUDO=""
+ensure_sudo() {
+  if [ "$(id -u)" -eq 0 ]; then SUDO=""; return 0; fi
+  if ! command -v sudo >/dev/null 2>&1; then return 1; fi
+  if sudo -n true 2>/dev/null; then SUDO="sudo"; return 0; fi
+  echo -e "${YELLOW}  需要 sudo 权限安装依赖，请输入密码（输入时不显示，回车继续）${NC}"
+  if sudo -v; then SUDO="sudo"; return 0; fi
+  return 1
+}
+
+# 下载工具：优先 curl，其次 wget；都没有则自动装一个
+ensure_downloader() {
+  command -v curl >/dev/null 2>&1 && { DL="curl"; return 0; }
+  command -v wget >/dev/null 2>&1 && { DL="wget"; return 0; }
+  warn "未检测到 curl / wget，尝试自动安装 ..."
+  if ! ensure_sudo; then fail "无法获取 sudo 权限，请手动安装 curl 后重试：sudo apt install curl"; return 1; fi
   if [ $HAVE_APT -eq 1 ]; then
-    sudo apt-get update -qq && sudo apt-get install -y -qq curl && return 0
+    $SUDO apt-get update -qq && $SUDO apt-get install -y -qq curl && { DL="curl"; return 0; }
   elif [ $HAVE_DNF -eq 1 ]; then
-    sudo dnf install -y curl && return 0
+    $SUDO dnf install -y curl && { DL="curl"; return 0; }
   elif [ $HAVE_YUM -eq 1 ]; then
-    sudo yum install -y curl && return 0
+    $SUDO yum install -y curl && { DL="curl"; return 0; }
   elif [ $HAVE_BREW -eq 1 ]; then
-    brew install curl && return 0
+    brew install curl && { DL="curl"; return 0; }
   fi
   return 1
+}
+
+# 用已就绪的下载工具取文件：$1=URL $2=输出路径
+fetch() {
+  if [ "${DL:-}" = "curl" ]; then
+    curl -fsSL "$1" -o "$2"
+  else
+    wget -qO "$2" "$1"
+  fi
 }
 
 # ---------- 1. Node.js ----------
@@ -55,9 +77,9 @@ else
     [ -s "$HOME/.nvm/nvm.sh" ] && . "$HOME/.nvm/nvm.sh"
     nvm install --lts >/dev/null 2>&1 && nvm use --lts >/dev/null 2>&1
     command -v node >/dev/null 2>&1 && ok "Node.js 已通过 nvm 安装: $(node --version)" || fail "nvm 安装失败"
-  elif ensure_curl; then
+  elif ensure_downloader; then
     echo "    使用 nvm 官方脚本安装（推荐）..."
-    curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+    fetch https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh /tmp/nvm_install.sh && bash /tmp/nvm_install.sh
     # shellcheck disable=SC1091
     [ -s "$HOME/.nvm/nvm.sh" ] && . "$HOME/.nvm/nvm.sh"
     nvm install --lts >/dev/null 2>&1
@@ -79,11 +101,21 @@ echo; echo "[2/5] arduino-cli"
 if command -v arduino-cli >/dev/null 2>&1; then
   ok "arduino-cli 已安装: $(arduino-cli version 2>/dev/null | head -1)"
 else
-  warn "未检测到 arduino-cli，使用官方脚本安装 ..."
-  if ensure_curl; then
-    curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
-    # 官方脚本装到 ~/bin 或 /usr/local/bin
-    export PATH="$HOME/bin:$PATH"
+  warn "未检测到 arduino-cli，开始安装 ..."
+  if ensure_downloader; then
+    # 优先官方 install.sh（需要 curl）；失败或只有 wget 时直下 release 二进制
+    if command -v curl >/dev/null 2>&1; then
+      curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+      export PATH="$HOME/bin:$PATH"
+    fi
+    if ! command -v arduino-cli >/dev/null 2>&1; then
+      echo "    直接下载 arduino-cli 二进制 ..."
+      mkdir -p "$HOME/bin"
+      fetch "https://downloads.arduino.cc/arduino-cli/arduino-cli_latest_Linux_64bit.tar.gz" /tmp/arduino-cli.tar.gz \
+        && tar -xzf /tmp/arduino-cli.tar.gz -C "$HOME/bin" arduino-cli \
+        && chmod +x "$HOME/bin/arduino-cli" \
+        && export PATH="$HOME/bin:$PATH"
+    fi
     if command -v arduino-cli >/dev/null 2>&1; then
       ok "arduino-cli 已安装: $(arduino-cli version | head -1)"
       grep -q "$HOME/bin" "$HOME/.bashrc" 2>/dev/null || echo 'export PATH="$HOME/bin:$PATH"' >> "$HOME/.bashrc"
