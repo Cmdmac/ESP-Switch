@@ -13,67 +13,137 @@
 
 const http = require('http');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
-const { spawn, execSync } = require('child_process');
+const { spawn, exec, execSync } = require('child_process');
 
 const PORT = process.env.PORT || 8787;
-// 路径一律「环境变量优先，缺省回退写死值」：换机器部署时设环境变量即可，无需改代码。
-// 注意不用 IDF 官方的 IDF_PATH（可能被终端残留的其他 IDF 版本污染），本项目用专用变量。
-const SKETCH_DIR = process.env.ESP_SWITCH_SKETCH_DIR || '/Users/meizu/work/ESP-Switch/ESP32_Light_Switch';
+const isWin = () => process.platform === 'win32';
+
+// 依次返回第一个存在的路径；都不存在返回 null
+function firstExisting(cands) {
+  for (const c of cands) {
+    try { if (c && fs.existsSync(c)) return c; } catch (_) {}
+  }
+  return null;
+}
+
+// ---- 路径解析：环境变量优先 -> 跨平台自动探测 -> 仓库内联定位 ----
+// 仓库内与 server.js 的相对位置（无论克隆到哪台机器哪个目录都成立）
+const REPO_ROOT = path.resolve(__dirname, '..');
 const PUBLIC_DIR = path.join(__dirname, 'public');
-// 编译产物目录（按 fqbn 分子目录，避免 c2/c3 互相覆盖）
-const BUILD_BASE = '/tmp/espbuild';
-const CONFIG_FILE = path.join(process.env.HOME || '', '.arduino15', 'arduino-cli.yaml');
+const SKETCH_DIR = process.env.ESP_SWITCH_SKETCH_DIR || path.join(REPO_ROOT, 'ESP32_Light_Switch');
+const IDF_C2_DIR = process.env.ESP_SWITCH_IDF_C2_DIR || path.join(REPO_ROOT, 'idf-c2');
+// 编译产物目录：放系统临时目录（Windows: %TEMP%，macOS/Linux: /tmp），按 fqbn 分子目录
+const BUILD_BASE = process.env.ESP_SWITCH_BUILD_BASE || path.join(os.tmpdir(), 'espbuild');
+// arduino-cli 配置文件（Windows 与 macOS/Linux 的 home 定位统一走 os.homedir()）
+const CONFIG_FILE = process.env.ESP_SWITCH_ARDUINO_CLI_YAML || path.join(os.homedir(), '.arduino15', 'arduino-cli.yaml');
 
 // ---- ESP-IDF 环境（用于编译 ESP32-C2，复用本机 IDF + arduino-esp32 作组件）----
-// IDF_DIR 解析优先级：ESP_SWITCH_IDF_DIR（显式覆盖）> 环境变量 IDF_PATH（当前 shell 的 IDF）> 写死默认值。
-// 这样你 source 哪个 IDF 就编哪个；显式变量可压过环境，防止误用。
-const IDF_DIR = process.env.ESP_SWITCH_IDF_DIR || process.env.IDF_PATH || '/Users/meizu/esp/esp-idf';
-const IDF_EXPORT = path.join(IDF_DIR, 'export.sh');
-const IDF_C2_DIR = process.env.ESP_SWITCH_IDF_C2_DIR || '/Users/meizu/work/ESP-Switch/idf-c2';
-// IDF 的 python venv（含 click）：显式锁定，避免 export.sh 在 node 进程 PATH 下
+// IDF_DIR 解析优先级：ESP_SWITCH_IDF_DIR（显式覆盖）> 环境变量 IDF_PATH > 自动探测常见安装布局。
+function findIdfDir() {
+  if (process.env.ESP_SWITCH_IDF_DIR) return process.env.ESP_SWITCH_IDF_DIR;
+  const marker = isWin() ? 'export.bat' : 'export.sh';
+  if (process.env.IDF_PATH && fs.existsSync(path.join(process.env.IDF_PATH, marker))) return process.env.IDF_PATH;
+  // 常见安装根：IDF_TOOLS_PATH/frameworks（官方安装器）、~/esp、~/esp-idf、/opt
+  const roots = [
+    process.env.IDF_TOOLS_PATH && path.join(process.env.IDF_TOOLS_PATH, 'frameworks'),
+    path.join(os.homedir(), 'esp'),
+    path.join(os.homedir(), 'esp-idf'),
+    '/opt',
+  ].filter(Boolean);
+  const found = [];
+  for (const root of roots) {
+    let names;
+    try { names = fs.readdirSync(root); } catch (_) { continue; }
+    for (const n of names) {
+      const cand = path.join(root, n);
+      // 兼容多种布局：<root>/esp-idf、<root>/v5.5/esp-idf、<root>/v5.5.2/esp-idf、<root>/esp-idf-v5.5.2
+      for (const c of [cand, path.join(cand, 'esp-idf')]) {
+        if (!fs.existsSync(path.join(c, marker))) continue;
+        const m = (c.match(/v?(\d+)\.(\d+)\.(\d+)/) || []);
+        found.push({ dir: c, ver: m.length ? [Number(m[1]), Number(m[2]), Number(m[3])] : [0, 0, 0] });
+      }
+    }
+  }
+  if (!found.length) return null;
+  found.sort((a, b) => (b.ver[0] - a.ver[0]) || (b.ver[1] - a.ver[1]) || (b.ver[2] - a.ver[2]));
+  return found[0].dir;
+}
+const IDF_DIR = findIdfDir() || process.env.IDF_PATH || path.join(os.homedir(), 'esp', 'esp-idf');
+// Windows 用 export.ps1（PowerShell），macOS/Linux 用 export.sh（bash）
+const IDF_EXPORT = isWin() ? path.join(IDF_DIR, 'export.ps1') : path.join(IDF_DIR, 'export.sh');
+
+// IDF 的 python venv（含 click）：显式锁定，避免 export 在 node 进程 PATH 下
 // 探测到无 click 的 python（如 miniconda）而挂错 venv（症状：Cannot import module "click"）。
 // 解析优先级：
 //   1) 环境变量 IDF_PYTHON_ENV_PATH（source 过 IDF 的 shell 已设好，直接用）
-//   2) 从 IDF_DIR 的 version.cmake 推导前缀（idf5.3 / idf5.4 …），再在 ~/.espressif/python_env 下探测
+//   2) 从 IDF_DIR 的 version.cmake 推导前缀（idf5.3 / idf5.4 …），再在候选 python_env 根下探测
 //   3) ESP_SWITCH_IDF_VENV_PREFIX 显式覆盖前缀（跨机 IDF 版本特殊时用）
-const IDF_VENV = (() => {
+function findIdfVenv(idfDir) {
   if (process.env.IDF_PYTHON_ENV_PATH) return process.env.IDF_PYTHON_ENV_PATH;
-  const envRoot = path.join(process.env.HOME || '', '.espressif', 'python_env');
-  // 从 version.cmake 读 IDF 主次版本 -> 前缀 idfX.Y
   let prefix = process.env.ESP_SWITCH_IDF_VENV_PREFIX;
   if (!prefix) {
     try {
-      const v = fs.readFileSync(path.join(IDF_DIR, 'tools', 'cmake', 'version.cmake'), 'utf8');
+      const v = fs.readFileSync(path.join(idfDir, 'tools', 'cmake', 'version.cmake'), 'utf8');
       const mj = (v.match(/set\(IDF_VERSION_MAJOR\s+(\d+)\)/) || [])[1];
       const mn = (v.match(/set\(IDF_VERSION_MINOR\s+(\d+)\)/) || [])[1];
       if (mj && mn) prefix = 'idf' + mj + '.' + mn;
     } catch (_) { /* fallthrough */ }
   }
   prefix = prefix || 'idf5.3';
-  try {
-    const cands = fs.readdirSync(envRoot)
-      .filter(d => d.startsWith(prefix + '_py') && d.endsWith('_env'))
-      .sort();
-    const pick = cands.find(d => d.includes('py3.13')) || cands[cands.length - 1];
-    if (pick) return path.join(envRoot, pick);
-  } catch (_) { /* fallthrough */ }
-  return path.join(envRoot, prefix + '_py3.13_env');
-})();
-const IDF_VENV_BIN = path.join(IDF_VENV, 'bin');
+  // 候选 python_env 根：IDF_TOOLS_PATH/python_env（官方安装器）、~/.espressif/python_env
+  const roots = [
+    process.env.IDF_TOOLS_PATH && path.join(process.env.IDF_TOOLS_PATH, 'python_env'),
+    path.join(os.homedir(), '.espressif', 'python_env'),
+  ].filter(Boolean);
+  for (const root of roots) {
+    try {
+      const cands = fs.readdirSync(root)
+        .filter(d => d.startsWith(prefix + '_py') && d.endsWith('_env'))
+        .sort();
+      const pick = cands.find(d => d.includes('py3.13')) || cands[cands.length - 1];
+      if (pick) return path.join(root, pick);
+    } catch (_) { /* fallthrough */ }
+  }
+  const fallbackRoot = roots[0] || path.join(os.homedir(), '.espressif', 'python_env');
+  return path.join(fallbackRoot, prefix + '_py3.13_env');
+}
+const IDF_VENV = findIdfVenv(IDF_DIR);
+// Windows venv 的可执行目录是 Scripts，macOS/Linux 是 bin
+const IDF_VENV_BIN = firstExisting([path.join(IDF_VENV, 'Scripts'), path.join(IDF_VENV, 'bin')]) || path.join(IDF_VENV, 'bin');
+const IDF_VENV_PY = path.join(IDF_VENV_BIN, isWin() ? 'python.exe' : 'python3');
 
-// ---- 解析 arduino-cli 路径 ----
+// 统一拼一条「初始化 IDF 环境后执行命令」的 shell（按平台选 PowerShell / bash）。
+// 显式锁定 IDF_PATH + IDF_PYTHON_ENV_PATH + venv bin 前置，再 source export：
+// 防止 node 进程继承的 PATH/残留变量导致探测到无 click 的 python（症状 "Cannot import module click"）。
+function idfShell(innerCmd) {
+  if (isWin()) {
+    return `$env:IDF_PATH='${IDF_DIR}'; $env:IDF_PYTHON_ENV_PATH='${IDF_VENV}'; `
+      + `$env:PATH='${IDF_VENV_BIN};' + $env:PATH; `
+      + `& '${IDF_EXPORT}' *> $null; Set-Location '${IDF_C2_DIR}'; ${innerCmd}`;
+  }
+  return `export IDF_PATH="${IDF_DIR}"; export IDF_PYTHON_ENV_PATH="${IDF_VENV}"; `
+    + `export PATH="${IDF_VENV_BIN}:$PATH"; `
+    + `source "${IDF_EXPORT}" >/dev/null 2>&1; cd "${IDF_C2_DIR}" && ${innerCmd}`;
+}
+
+// ---- 解析 arduino-cli 路径：PATH -> 平台常见安装位置 ----
 let CLI = 'arduino-cli';
 try {
-  const p = execSync('which arduino-cli').toString().trim();
+  const which = isWin() ? 'where arduino-cli' : 'which arduino-cli';
+  const p = execSync(which).toString().trim().split(/\r?\n/)[0];
   if (p) CLI = p;
 } catch (e) { /* ignore */ }
 if (CLI === 'arduino-cli') {
+  const exe = isWin() ? 'arduino-cli.exe' : 'arduino-cli';
   const cands = [
-    '/usr/local/bin/arduino-cli',
-    '/opt/homebrew/bin/arduino-cli',
-    path.join(process.env.HOME || '', '.arduino15', 'bin', 'arduino-cli'),
-  ];
+    process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Programs', 'arduino-cli', exe),
+    process.env.PROGRAMFILES && path.join(process.env.PROGRAMFILES, 'Arduino CLI', exe),
+    path.join(os.homedir(), '.arduino15', 'bin', exe),
+    '/usr/local/bin/' + exe,
+    '/opt/homebrew/bin/' + exe,
+  ].filter(Boolean);
   for (const c of cands) {
     if (fs.existsSync(c)) { CLI = c; break; }
   }
@@ -129,19 +199,58 @@ function idfBuildDirFor(board) {
 }
 
 // ---- 工具函数 ----
-function listPorts() {
-  try {
-    return fs.readdirSync('/dev')
-      .filter(n => n.startsWith('cu.'))
-      .map(n => '/dev/' + n);
-  } catch (e) { return []; }
+
+// 异步执行一条命令并取 stdout，带超时兜底（子进程挂起也不阻塞事件循环）。
+// Windows 上 reg/mode 这类命令在部分受限环境可能被策略挂起，必须双重保险。
+function execQuick(cmd, timeoutMs) {
+  return new Promise(resolve => {
+    let done = false;
+    let child = null;
+    const finish = val => {
+      if (done) return;
+      done = true;
+      try { if (child && child.pid) child.kill('SIGKILL'); } catch (_) {}
+      resolve(val);
+    };
+    try {
+      child = exec(cmd, { timeout: timeoutMs, windowsHide: true, maxBuffer: 1024 * 1024 },
+        (err, stdout) => finish(err ? '' : (stdout || '').toString()));
+    } catch (e) { finish(''); return; }
+    // 兜底：即便 timeout 机制失效，也强制在超时后返回
+    setTimeout(() => finish(''), timeoutMs + 1000);
+  });
+}
+
+function parseComPorts(raw) {
+  // 一次性 match 提取 COM 口（避免 while + /g exec 在某些字符序列下 lastIndex 不推进导致死循环）
+  const all = (raw || '').match(/COM\d{1,3}/g) || [];
+  return [...new Set(all)];
+}
+
+async function listPorts() {
+  if (!isWin()) {
+    // macOS / Linux：直接扫描串口设备节点（快）
+    try {
+      return fs.readdirSync('/dev')
+        .filter(n => /^cu\./.test(n) || /^tty\.(USB|ACM)/.test(n) || /^ttyUSB\d+$/.test(n) || /^ttyACM\d+$/.test(n))
+        .map(n => '/dev/' + n);
+    } catch (e) { return []; }
+  }
+  // Windows：优先查注册表 SERIALCOMM（秒回、不触碰硬件），失败回退 mode 命令。
+  for (const cmd of ['reg query HKLM\\HARDWARE\\DEVICEMAP\\SERIALCOMM', 'mode']) {
+    const ports = parseComPorts(await execQuick(cmd, 3000));
+    if (ports.length) return ports;
+  }
+  return [];
 }
 
 function isValidFqbn(s) {
   return typeof s === 'string' && /^[a-zA-Z0-9:._-]+$/.test(s) && s.length < 80;
 }
 function isValidPort(s) {
-  return typeof s === 'string' && (s.startsWith('/dev/cu.') || s.startsWith('/dev/tty.'));
+  if (typeof s !== 'string' || !s.length) return false;
+  if (isWin()) return /^COM\d{1,3}$/i.test(s);   // Windows: COM1..COM255
+  return s.startsWith('/dev/cu.') || s.startsWith('/dev/tty.');  // macOS/Linux
 }
 
 function sseHeaders(res) {
@@ -308,6 +417,8 @@ function runStream(res, args, label, buildDir, fqbn, board) {
 
 // 以 SSE 方式流式执行一条 idf.py 命令：source IDF 环境后，在 idf-c2 目录跑构建/烧录。
 // IDF_C2_BOARD 通过 env 注入，供 idf-c2/main/CMakeLists.txt 选择产品板宏。
+// Windows 用 PowerShell 执行（ESP-IDF 官方仅支持 cmd/PowerShell，bash 会被 MSYS 检测拒绝），
+// macOS/Linux 用 bash。
 function runIdfStream(res, shell, label, board) {
   sseHeaders(res);
   sseSend(res, 'start', { label, cli: 'idf.py', args: shell });
@@ -315,7 +426,11 @@ function runIdfStream(res, shell, label, board) {
   const env = Object.assign({}, process.env, { IDF_C2_BOARD: board });
   let child;
   try {
-    child = spawn('bash', ['-c', shell], { cwd: IDF_C2_DIR, env });
+    if (isWin()) {
+      child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', shell], { cwd: IDF_C2_DIR, env });
+    } else {
+      child = spawn('bash', ['-c', shell], { cwd: IDF_C2_DIR, env });
+    }
   } catch (e) {
     sseSend(res, 'err', 'spawn error: ' + e.message);
     sseSend(res, 'done', { code: -1 });
@@ -362,6 +477,7 @@ const server = http.createServer((req, res) => {
   if (p === '/api/status') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
+      platform: process.platform,
       cli: CLI,
       cliExists: fs.existsSync(CLI),
       config: CONFIG_FILE,
@@ -369,17 +485,22 @@ const server = http.createServer((req, res) => {
       sketch: SKETCH_DIR,
       sketchExists: fs.existsSync(SKETCH_DIR),
       idfDir: IDF_DIR,
-      idfExists: fs.existsSync(path.join(IDF_DIR, 'export.sh')),
+      idfExists: fs.existsSync(IDF_EXPORT),
       idfVenv: IDF_VENV,
-      idfVenvExists: fs.existsSync(path.join(IDF_VENV, 'bin', 'python3')),
+      idfVenvExists: fs.existsSync(IDF_VENV_PY),
       idfC2Exists: fs.existsSync(IDF_C2_DIR),
     }));
     return;
   }
 
   if (p === '/api/ports') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ports: listPorts() }));
+    listPorts().then(ports => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ports }));
+    }).catch(() => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{"ports":[]}');
+    });
     return;
   }
 
@@ -467,12 +588,8 @@ const server = http.createServer((req, res) => {
     const bdir = idfBuildDirFor(board);
     const idfCmd = action === 'flash' ? `idf.py -B "${bdir}" -p "${port}" flash` : `idf.py -B "${bdir}" build`;
     const setStep = doSet ? `idf.py -B "${bdir}" set-target ${target} && ` : '';
-    // 显式锁定 IDF_PATH + IDF_PYTHON_ENV_PATH + venv bin 前置，再 source export.sh：
-    // 防止 node 进程继承的 PATH/残留变量导致探测到无 click 的 python（症状 "Cannot import module click"）。
-    // 进入 idf-c2 -> (可选)set-target -> build/flash
-    const shell = `export IDF_PATH="${IDF_DIR}"; export IDF_PYTHON_ENV_PATH="${IDF_VENV}"; `
-      + `export PATH="${IDF_VENV_BIN}:$PATH"; `
-      + `source "${IDF_EXPORT}" >/dev/null 2>&1; cd "${IDF_C2_DIR}" && ${setStep}${idfCmd}`;
+    // idfShell() 内部已按平台初始化 IDF 环境（Win: export.ps1 / mac-Linux: export.sh）并进入 idf-c2
+    const shell = idfShell(setStep + idfCmd);
     runIdfStream(res, shell, (action === 'flash' ? 'C2 构建并烧录' : 'C2 构建'), board);
     return;
   }
@@ -510,9 +627,7 @@ const server = http.createServer((req, res) => {
     const baud = url.searchParams.get('baud') || '115200';
     if (!isValidPort(port)) { res.writeHead(400); res.end('bad port'); return; }
     if (!/^\d{4,7}$/.test(baud)) { res.writeHead(400); res.end('bad baud'); return; }
-    const shell = `export IDF_PATH="${IDF_DIR}"; export IDF_PYTHON_ENV_PATH="${IDF_VENV}"; `
-      + `export PATH="${IDF_VENV_BIN}:$PATH"; `
-      + `source "${IDF_EXPORT}" >/dev/null 2>&1; cd "${IDF_C2_DIR}" && idf.py -p "${port}" -b ${baud} monitor`;
+    const shell = idfShell(`idf.py -p "${port}" -b ${baud} monitor`);
     runIdfStream(res, shell, '监视 ' + port, '');
     return;
   }
@@ -543,9 +658,7 @@ const server = http.createServer((req, res) => {
       if (!isValidC2Board(board)) { res.writeHead(400); res.end('bad board'); return; }
       const bdir = idfBuildDirFor(board);
       if (!fs.existsSync(bdir) || !collectIdfFirmware(board).length) { res.writeHead(404); res.end('no artifacts'); return; }
-      const shell = `export IDF_PATH="${IDF_DIR}"; export IDF_PYTHON_ENV_PATH="${IDF_VENV}"; `
-        + `export PATH="${IDF_VENV_BIN}:$PATH"; `
-        + `source "${IDF_EXPORT}" >/dev/null 2>&1; cd "${IDF_C2_DIR}" && idf.py -B "${bdir}" -p "${port}" flash`;
+      const shell = idfShell(`idf.py -B "${bdir}" -p "${port}" flash`);
       runIdfStream(res, shell, '烧写 ' + board, board);
     } else {
       res.writeHead(400); res.end('bad type');
