@@ -80,7 +80,7 @@
   <div class="card">
     <div class="row">
       <div class="field">
-        <label>板型 (FQBN)</label>
+        <label>产品板型</label>
         <select id="board"></select>
       </div>
       <div class="field">
@@ -127,6 +127,7 @@ const $ = id => document.getElementById(id);
 const logEl = $('log');
 let monitorES = null;   // 当前监视的 EventSource
 let busy = false;       // 编译/上传进行中
+let currentMacro = '';  // 当前产品板对应的 BOARD_XXX 宏（编译时注入）
 
 function ts() {
   const d = new Date();
@@ -154,9 +155,17 @@ async function loadMeta() {
   // boards
   try {
     const b = await (await fetch('/api/boards')).json();
-    $('board').innerHTML = b.boards.map(x => `<option value="${x.fqbn}">${x.name} (${x.fqbn})</option>`).join('');
+    $('board').innerHTML = b.boards.map(x => `<option value="${x.fqbn}" data-macro="${x.macro}">${x.name}</option>`).join('');
+    syncBoardMacro();
   } catch(e) {}
   refreshPorts();
+}
+
+// 产品板下拉变化：记录对应的 BOARD_XXX 宏，编译/上传时注入 -D<macro>
+function syncBoardMacro() {
+  const opt = $('board').selectedOptions[0];
+  currentMacro = opt ? opt.dataset.macro || '' : '';
+  $('board').title = currentMacro ? (currentMacro + '  →  ' + $('board').value) : $('board').value;
 }
 
 async function refreshPorts() {
@@ -208,8 +217,9 @@ $('btnCompile').onclick = () => {
   if (busy) return;
   setBusy(true);
   const fqbn = $('board').value;
+  const board = currentMacro;
   const verbose = $('verbose').checked ? '1' : '0';
-  runStream(`/api/stream/compile?fqbn=${encodeURIComponent(fqbn)}&verbose=${verbose}`, '编译', () => setBusy(false));
+  runStream(`/api/stream/compile?fqbn=${encodeURIComponent(fqbn)}&board=${encodeURIComponent(board)}&verbose=${verbose}`, '编译', () => setBusy(false));
 };
 
 $('btnUpload').onclick = () => {
@@ -218,8 +228,9 @@ $('btnUpload').onclick = () => {
   if (!port || port.startsWith('（')) { append('err', '请先选择一个有效端口'); return; }
   setBusy(true);
   const fqbn = $('board').value;
+  const board = currentMacro;
   const verbose = $('verbose').checked ? '1' : '0';
-  runStream(`/api/stream/upload?fqbn=${encodeURIComponent(fqbn)}&port=${encodeURIComponent(port)}&verbose=${verbose}`, '编译并上传', () => setBusy(false));
+  runStream(`/api/stream/upload?fqbn=${encodeURIComponent(fqbn)}&port=${encodeURIComponent(port)}&board=${encodeURIComponent(board)}&verbose=${verbose}`, '编译并上传', () => setBusy(false));
 };
 
 $('btnMonitor').onclick = () => {
@@ -244,6 +255,7 @@ $('btnStop').onclick = () => {
 
 $('btnClear').onclick = () => { logEl.innerHTML = ''; };
 $('refreshPort').onclick = refreshPorts;
+$('board').onchange = syncBoardMacro;
 
 function fmtSize(b) {
   if (b == null) return '';
@@ -261,7 +273,7 @@ function showFirmware(d) {
   if (d.size != null) html += `<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">程序占用 Flash：${fmtSize(d.size)}</div>`;
   html += '<div style="display:flex;flex-direction:column;gap:8px;">';
   d.files.forEach(f => {
-    const url = `/api/download?fqbn=${encodeURIComponent(d.fqbn || '')}&file=${encodeURIComponent(f.name)}`;
+    const url = `/api/download?fqbn=${encodeURIComponent(d.fqbn || '')}&board=${encodeURIComponent(d.board || '')}&file=${encodeURIComponent(f.name)}`;
     html += `<div class="fw-item">
       <div class="fw-info"><div class="fw-name">${f.name}</div><div class="fw-size">${fmtSize(f.size)}</div></div>
       <a href="${url}" class="dlbtn" download>下载</a>

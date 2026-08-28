@@ -8,18 +8,13 @@
 
   Supported chips (single sketch, selected by the board you pick):
   - ESP32-C2 / ESP32-C3 : PWM dimming + ambient + current; multi ADC channels
-  - ESP8285 (ESP8266)    : on/off + PWM brightness (GPIO5 analogWrite), current only; single ADC (A0)
+  - ESP8285 (ESP8266)    : on/off + PWM brightness (analogWrite), current only; single ADC (A0)
 
-  Hardware (ESP32-C3 pin mapping):
-  - GPIO4 : lamp PWM output (brightness control)
-  - GPIO3 : ambient light sensor (ADC, photodiode + 10k pulldown)
-  - GPIO0 : current sense amplifier output (ADC, with R11/R84 2/3 divider)
-  - GPIO9 : on-board BOOT button (active LOW; separate from the lamp pin)
-
-  ESP8285 default pin mapping (see the config block below):
-  - LIGHT_PWM_PIN     : lamp digital output (relay / SSR)
-  - CURRENT_ADC_PIN   : current sense (the only ADC, A0, 0~1.0V)
-  - BUTTON_PIN        : on-board BOOT/flash button (usually GPIO0 on ESP8285)
+  板型（产品板）通过编译宏 -DBOARD_XXX 选择，详见下方“板型选择”配置块。
+  支持的产品板：
+    ESP01F-Switch / ESP32C3-Switch / ESP32C2-Switch-Nano / ESP32C2-Switch-Dev /
+    ESP8285-Switch / ESP32C2-Module / ESP8285-Module / ESPC3-Module
+  未指定时默认 ESP32C2-Switch-Nano（与旧版 ESP32 引脚一致）。
 
   NOTE: No separate status LED on these boards — the lamp pin drives the lamp directly.
         The BOOT button is reused as the local button: short press toggles the lamp,
@@ -62,38 +57,125 @@
   #include <time.h>           // NTP 时间：configTime / getLocalTime / time()
 #endif
 
-// ==================== 硬件引脚配置（按芯片分两套） ====================
-// ESP32-C2/C3：多 ADC 通道，支持亮度 PWM + 环境光 + 电流
-// ESP8285    ：单 ADC（A0，0~1.0V），不做环境光、仅用 A0 做电流检测；
-//              灯用 GPIO5 的 analogWrite() 软件 PWM 做开关 + 亮度调光
-#ifdef ESP8266
-  // ---- ESP8285 / ESP8266 引脚（按你的 ESP8285 板实际接线修改） ----
-  #define LIGHT_PWM_PIN           5    // 灯控数字输出（继电器/SSR）。避免 strapping 脚 GPIO0/2/15
-  #define RELAY_ACTIVE_LOW        0     // 1=低电平吸合（多数继电器模块），0=高电平吸合。若灯“相反/不受控”改 1
-  #define STATUS_LED_PIN          (-1)  // 无独立状态 LED
-  #define AMBIENT_LIGHT_ADC_PIN   (-1)  // ESP8285 仅 1 路 ADC，已留给电流检测，故不读环境光
-  #define CURRENT_ADC_PIN         A0    // 电流检测（唯一 ADC 通道，量程 0~1.0V）
-  #define BUTTON_PIN              0     // 板载 BOOT/下载键通常是 GPIO0（低电平有效）
-  // 功能开关
-  #define BRIGHTNESS_SUPPORTED    1     // ESP8285 用 analogWrite() 支持亮度 PWM 调光
-  #define AMBIENT_SUPPORTED       0     // 不读环境光
-  #define CURRENT_SUPPORTED       1     // 保留实时电流显示
-  #define ADC_MAX                 1023  // ESP8285/ESP8266 ADC 为 10 位
-  #define ADC_VREF_MV             1000  // ESP8285/ESP8266 ADC 量程 0~1.0V（与 ESP32 的 3.3V 不同）
-  #define CURRENT_CAL_SCALE       1.6f  // 实测校准：该板同负载实测电流约为显示值的 2.2 倍，用于修正分压/增益总误差
+// ==================== 板型选择（产品板 → 引脚 / 功能开关） ====================
+// 用编译宏选定目标板：在 arduino-cli / PlatformIO 传入 -DBOARD_XXX，
+// 或在下面把默认板改成你用的那块（一次只定义一个 BOARD_XXX）。
+// 产品板与芯片(FQBN)对应关系：
+//   ESP01F-Switch       -> ESP8266/ESP8285 (esp8266:esp8266:generic)
+//   ESP8285-Switch      -> ESP8266/ESP8285 (esp8266:esp8266:generic)
+//   ESP8285-Module      -> ESP8266/ESP8285 (esp8266:esp8266:generic)
+//   ESP32C3-Switch      -> ESP32-C3         (esp32:esp32:esp32c3)
+//   ESPC3-Module        -> ESP32-C3         (esp32:esp32:esp32c3)
+//   ESP32C2-Switch-Nano -> ESP32-C2         (esp32:esp32:esp32c2)
+//   ESP32C2-Switch-Dev  -> ESP32-C2         (esp32:esp32:esp32c2)
+//   ESP32C2-Module      -> ESP32-C2         (esp32:esp32:esp32c2)
+// NC = 未连接（对应功能关闭）；ESP8266 板的 “ADC” 用 A0（唯一的 ADC 通道）。
+#if defined(BOARD_ESP01F_SWITCH)
+  #define BOARD_NAME "ESP01F-Switch"
+  #define LIGHT_PWM_PIN         2
+  #define AMBIENT_LIGHT_ADC_PIN A0     // 单路 ADC（A0）做环境光
+  #define CURRENT_ADC_PIN       (-1)
+  #define BUTTON_PIN            5
+  #define AMBIENT_SUPPORTED     1
+  #define CURRENT_SUPPORTED     0
+#elif defined(BOARD_ESP32C3_SWITCH)
+  #define BOARD_NAME "ESP32C3-Switch"
+  #define LIGHT_PWM_PIN         4
+  #define AMBIENT_LIGHT_ADC_PIN 3
+  #define CURRENT_ADC_PIN       0
+  #define BUTTON_PIN            9
+  #define AMBIENT_SUPPORTED     1
+  #define CURRENT_SUPPORTED     1
+#elif defined(BOARD_ESP32C2_SWITCH_NANO)
+  #define BOARD_NAME "ESP32C2-Switch-Nano"
+  #define LIGHT_PWM_PIN         4
+  #define AMBIENT_LIGHT_ADC_PIN 3
+  #define CURRENT_ADC_PIN       0
+  #define BUTTON_PIN            9
+  #define AMBIENT_SUPPORTED     1
+  #define CURRENT_SUPPORTED     1
+#elif defined(BOARD_ESP32C2_SWITCH_DEV)
+  #define BOARD_NAME "ESP32C2-Switch-Dev"
+  #define LIGHT_PWM_PIN         6
+  #define AMBIENT_LIGHT_ADC_PIN 3
+  #define CURRENT_ADC_PIN       0
+  #define BUTTON_PIN            9
+  #define AMBIENT_SUPPORTED     1
+  #define CURRENT_SUPPORTED     1
+#elif defined(BOARD_ESP8285_SWITCH)
+  #define BOARD_NAME "ESP8285-Switch"
+  #define LIGHT_PWM_PIN         5
+  #define AMBIENT_LIGHT_ADC_PIN (-1)
+  #define CURRENT_ADC_PIN       A0     // 唯一 ADC（A0）做电流检测
+  #define BUTTON_PIN            0
+  #define AMBIENT_SUPPORTED     0
+  #define CURRENT_SUPPORTED     1
+#elif defined(BOARD_ESP32C2_MODULE)
+  #define BOARD_NAME "ESP32C2-Module"
+  #define LIGHT_PWM_PIN         18
+  #define AMBIENT_LIGHT_ADC_PIN (-1)
+  #define CURRENT_ADC_PIN       (-1)
+  #define BUTTON_PIN            9
+  #define AMBIENT_SUPPORTED     0
+  #define CURRENT_SUPPORTED     0
+#elif defined(BOARD_ESP8285_MODULE)
+  #define BOARD_NAME "ESP8285-Module"
+  #define LIGHT_PWM_PIN         8
+  #define AMBIENT_LIGHT_ADC_PIN (-1)
+  #define CURRENT_ADC_PIN       (-1)
+  #define BUTTON_PIN            0
+  #define AMBIENT_SUPPORTED     0
+  #define CURRENT_SUPPORTED     0
+#elif defined(BOARD_ESPC3_MODULE)
+  #define BOARD_NAME "ESPC3-Module"
+  #define LIGHT_PWM_PIN         10
+  #define AMBIENT_LIGHT_ADC_PIN (-1)
+  #define CURRENT_ADC_PIN       (-1)
+  #define BUTTON_PIN            9
+  #define AMBIENT_SUPPORTED     0
+  #define CURRENT_SUPPORTED     0
 #else
-  // ---- ESP32-C2/C3 引脚（按你的原理图实际接线） ----
-  #define LIGHT_PWM_PIN           4     // 灯 PWM 输出（直接驱动灯，板载无独立状态 LED）
-  #define STATUS_LED_PIN          (-1)  // 独立状态 LED；本板无此功能，设为 -1 禁用
-  #define AMBIENT_LIGHT_ADC_PIN   3     // 光敏检测：VDD → 光敏二极管 U2 → GPIO3 → R8(10k) → GND，亮度越高电压越高
-  #define CURRENT_ADC_PIN         0     // 电流检测：INA180A1 输出（R83=150mΩ 高侧分流，GPIO0 前端 R11/R84 分压）
-  #define BUTTON_PIN              9     // 本地按键 = 板载 BOOT 键(GPIO9，低电平有效)
-  #define BRIGHTNESS_SUPPORTED    1
-  #define AMBIENT_SUPPORTED       1
-  #define CURRENT_SUPPORTED       1
-  #define ADC_MAX                 4095  // ESP32 ADC 12 位
-  #define ADC_VREF_MV             3100  // ADC_11db 衰减有效满量程约 0~3.1V（与 ESPHome 一致，保证电压换算准确）
-  #define CURRENT_CAL_SCALE       1.0f  // ESP32 参考板暂不校准
+  // 未指定板型：按芯片给一个合理默认，避免 ESP8266 误用 ESP32 引脚
+  #ifdef ESP8266
+    #define BOARD_NAME "ESP8285-Switch"
+    #define LIGHT_PWM_PIN         5
+    #define AMBIENT_LIGHT_ADC_PIN (-1)
+    #define CURRENT_ADC_PIN       A0
+    #define BUTTON_PIN            0
+    #define AMBIENT_SUPPORTED     0
+    #define CURRENT_SUPPORTED     1
+  #else
+    #define BOARD_NAME "ESP32C2-Switch-Nano"
+    #define LIGHT_PWM_PIN         4
+    #define AMBIENT_LIGHT_ADC_PIN 3
+    #define CURRENT_ADC_PIN       0
+    #define BUTTON_PIN            9
+    #define AMBIENT_SUPPORTED     1
+    #define CURRENT_SUPPORTED     1
+  #endif
+#endif
+
+#define STATUS_LED_PIN        (-1)   // 这些板均无独立状态 LED；灯引脚直接驱动灯
+#define BRIGHTNESS_SUPPORTED  1      // 所有板都有 PWM 引脚，支持亮度调光（含 ESP8266 的 analogWrite 软件 PWM）
+
+// ==================== 芯片相关（ESP8266 vs ESP32）：ADC 位数/量程、电流检测参数 ====================
+#ifdef ESP8266
+  #define RELAY_ACTIVE_LOW         0     // 1=低电平吸合（多数继电器模块），0=高电平吸合。若灯“相反/不受控”改 1
+  #define ADC_MAX                  1023  // ESP8285/ESP8266 ADC 为 10 位
+  #define ADC_VREF_MV              1000  // ESP8285/ESP8266 ADC 量程 0~1.0V（与 ESP32 的 3.3V 不同）
+  #define CURRENT_CAL_SCALE        1.6f  // 实测校准：该板同负载实测电流约为显示值的 2.2 倍，用于修正分压/增益总误差
+  // 电流检测（ESP8285-Switch，A0）：INA180A1 增益 20，R_shunt=20mΩ，分压 1/3
+  #define SHUNT_RESISTANCE_MILLIOHM    20.0f
+  #define CURRENT_SENSE_GAIN           20.0f
+  #define CURRENT_SENSE_DIVIDER_RATIO  (1.0f/3.0f)
+#else
+  #define ADC_MAX                  4095  // ESP32 ADC 12 位
+  #define ADC_VREF_MV              3100  // ADC_11db 衰减有效满量程约 0~3.1V（与 ESPHome 一致）
+  #define CURRENT_CAL_SCALE        1.0f  // ESP32 参考板暂不校准
+  // ESP32-C2/C3：GPIO0 前端 R11/R84 分压 2/3；分流电阻 150mΩ（用户硬件确认）；INA180A1 增益 20
+  #define SHUNT_RESISTANCE_MILLIOHM    150.0f
+  #define CURRENT_SENSE_GAIN           20.0f
+  #define CURRENT_SENSE_DIVIDER_RATIO  (2.0f/3.0f)
 #endif
 
 // 本地 BOOT 键复用为两个功能（单一按键，低电平有效，内部上拉）：
@@ -951,6 +1033,7 @@ void handleStatus() {
   json += "\"onTime\":\"" + onTimeStr + "\",";
   json += "\"offTime\":\"" + offTimeStr + "\",";
   json += "\"mode\":\"" + String(staMode ? "sta" : "ap") + "\",";
+  json += "\"board\":\"" + String(BOARD_NAME) + "\",";
   json += "\"ip\":\"" + currentIP + "\",";
   json += "\"wifiSsid\":\"" + wifiSsid + "\",";
   json += "\"brightnessSup\":" + String(BRIGHTNESS_SUPPORTED) + ",";
@@ -1041,6 +1124,7 @@ void setup() {
   Serial.begin(115200);
   delay(200);
   Serial.println("\nESP Light Switch starting...");
+  Serial.println("Board: " BOARD_NAME);
 
   if (STATUS_LED_PIN >= 0 && STATUS_LED_PIN != LIGHT_PWM_PIN) {
     pinMode(STATUS_LED_PIN, OUTPUT);

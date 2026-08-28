@@ -11,30 +11,41 @@ ESP 通断器固件，支持网页控制。基于 Arduino 框架，同一份代�
 - **本地按键**：板载 BOOT 键复用为本地控制——短按切换开关、长按 3 秒恢复出厂
 - **网页 OTA 升级**：在网页选择 `.bin` 固件即可无线升级，无需 USB 烧录
 
-> **芯片能力差异**：ESP32-C2/C3 支持全部功能（PWM 调光 + 环境光 + 电流）。ESP8285 只有 **1 路 ADC**（量程 0~1.0V），因此本设计对其**不做亮度调光、不读环境光**，灯为开关量输出，仅保留 A0 的实时电流显示。网页会自动按设备能力隐藏「亮度」与「环境亮度」。
+> **芯片能力差异**：ESP32-C2/C3 支持全部功能（PWM 调光 + 环境光 + 电流）。ESP8266/ESP8285 只有 **1 路 ADC**（量程 0~1.0V），因此同一块 ESP8266 板只能在“环境光”和“电流”中选其一（见下表）；但亮度 PWM 调光仍然支持（用 `analogWrite` 软件 PWM）。网页会按设备能力自动隐藏不支持的功能卡片。
 
-## 硬件默认引脚映射
+## 硬件引脚映射（按产品板）
 
-### ESP32-C2 / ESP32-C3
+同一份固件通过编译宏 **-DBOARD_XXX** 选择产品板（引脚 / 功能）。未指定时默认 `ESP32C2-Switch-Nano`。
 
-| 功能 | 引脚 | 说明 |
-|------|------|------|
-| 灯 PWM 输出 | GPIO4 | 亮度控制输出，直接驱动灯（本板无独立状态 LED） |
-| 环境光检测 | GPIO3 | 光敏电阻/光敏二极管 ADC |
-| 电流检测 | GPIO0 | 电流检测放大器输出 ADC（GPIO0 经 R11/R84 分压接入） |
-| BOOT 键 | GPIO9 | 板载唯一按键，低电平有效；复用为本地控制与恢复出厂 |
+| 产品板 | 芯片 (FQBN) | 灯 PWM | 环境光 | 电流 | BOOT 键 |
+|--------|------------|--------|--------|------|---------|
+| ESP01F-Switch | ESP8266 (`esp8266:esp8266:generic`) | GPIO2 | ADC (A0) | — | GPIO5 |
+| ESP32C3-Switch | ESP32-C3 (`esp32:esp32:esp32c3`) | GPIO4 | GPIO3 | GPIO0 | GPIO9 |
+| ESP32C2-Switch-Nano | ESP32-C2 (`esp32:esp32:esp32c2`) | GPIO4 | GPIO3 | GPIO0 | GPIO9 |
+| ESP32C2-Switch-Dev | ESP32-C2 (`esp32:esp32:esp32c2`) | GPIO6 | GPIO3 | GPIO0 | GPIO9 |
+| ESP8285-Switch | ESP8266 (`esp8266:esp8266:generic`) | GPIO5 | — | ADC (A0) | GPIO0 |
+| ESP32C2-Module | ESP32-C2 (`esp32:esp32:esp32c2`) | GPIO18 | — | — | GPIO9 |
+| ESP8285-Module | ESP8266 (`esp8266:esp8266:generic`) | GPIO8 | — | — | GPIO0 |
+| ESPC3-Module | ESP32-C3 (`esp32:esp32:esp32c3`) | GPIO10 | — | — | GPIO9 |
 
-> **注意**：本板没有独立状态 LED，GPIO4 直接驱动灯（PWM 亮度控制）。板载 **BOOT 键在 GPIO9**，与灯 PWM(GPIO4) 不冲突，且是本板唯一的物理按键。如果实际灯控 MOSFET 接在别的 GPIO，请修改 `ESP32_Light_Switch.ino` 顶部的 `LIGHT_PWM_PIN`。
+> **“—” = 未连接（NC）**：对应功能在该板上关闭（环境光/电流不显示，网页自动隐藏相关卡片）。
+> **ESP8266 的 “ADC”** 指唯一的 A0 通道（量程 0~1.0V），同一块 ESP8266 板只能把 A0 用于“环境光”或“电流”之一（见上表）。
 
-### ESP8285（ESP8266 内核）
+### 选择产品板编译
 
-| 功能 | 引脚 | 说明 |
-|------|------|------|
-| 灯输出（开关量） | GPIO12 | 数字输出驱动继电器/SSR（默认；请避开 strapping 脚 GPIO0/2/15） |
-| 电流检测 | A0 | 唯一 ADC 通道，量程 0~1.0V |
-| BOOT/下载键 | GPIO0 | 板载 BOOT 键，低电平有效；复用为本地控制与恢复出厂 |
+- **网页控制台（推荐）**：板型下拉直接选产品板，编译/上传会自动注入对应宏（esp32 核心用 `build.defines`、esp8266 用 `build.extra_flags`，避免覆盖核心自带的关键宏）。
+- **arduino-cli**：arduino-cli 没有 `-D` 标志，要用 `--build-property`：
+  - ESP32 核心（esp32c2/esp32c3）：注入到 `build.defines` 槽（不要直接覆盖 `build.extra_flags`，否则会丢掉 `-DESP32=ESP32` 等核心宏）：
+    ```bash
+    arduino-cli compile -b esp32:esp32:esp32c2 --build-property build.defines=-DBOARD_ESP32C2_SWITCH_DEV ESP32_Light_Switch/ESP32_Light_Switch.ino
+    ```
+  - ESP8266 核心（esp01f/esp8285）：`build.extra_flags` 默认空且被 recipe 直接引用，可覆盖：
+    ```bash
+    arduino-cli compile -b esp8266:esp8266:generic --build-property build.extra_flags=-DBOARD_ESP8285_SWITCH ESP32_Light_Switch/ESP32_Light_Switch.ino
+    ```
+- **Arduino IDE / PlatformIO**：在编译选项里加 `-DBOARD_ESP32C3_SWITCH` 之类的宏定义即可。
 
-> **注意**：ESP8285 上这些引脚是**默认值**，请按你实际 ESP8285 板子的接线修改 `.ino` 顶部 `ESP8266` 分支里的宏。GPIO0 是下载/strapping 脚，**上电/复位时按住会进入下载模式**（正常烧录用），长按恢复出厂逻辑只在启动完成后运行时生效。
+> 选 ESP8266 产品板（ESP01F / ESP8285）时务必用 ESP8266 核心（FQBN `esp8266:esp8266:generic`）；选 ESP32 产品板时用 ESP32 核心。芯片与板型不匹配会导致引脚无意义或编译报错（如 ESP8266 上引用 `A0` 以外的 ADC 引脚）。
 
 ## 开发环境
 
@@ -42,7 +53,7 @@ ESP 通断器固件，支持网页控制。基于 Arduino 框架，同一份代�
 - ESP32 芯片：ESP32 Arduino Core（建议 2.0.14+ 或 3.x）
 - ESP8285 芯片：ESP8266 Arduino Core（`esp8266 by ESP8266 Community`）
 
-> 同一份 `ESP32_Light_Switch.ino` 通过 `#ifdef ESP8266` 同时适配两套核心：选 ESP32 开发板时用 ESP32 核心，选 ESP8285 开发板时用 ESP8266 核心，无需切换文件。
+> 同一份 `ESP32_Light_Switch.ino` 通过 `#ifdef ESP8266` 适配两套核心，并通过 `-DBOARD_XXX` 选择具体产品板的引脚/功能：选 ESP32 开发板时用 ESP32 核心，选 ESP8285 开发板时用 ESP8266 核心，再用对应宏选定板型，无需切换文件。
 
 ### 安装 ESP32 开发板包
 
@@ -79,6 +90,8 @@ ESP 通断器固件，支持网页控制。基于 Arduino 框架，同一份代�
 - CPU Frequency：80 MHz 或 160 MHz 均可
 
 本代码使用通用 GPIO/ADC/PWM API，C2 和 C3 均可直接编译；ESP8285 走 ESP8266 分支（无 LEDC、用 EEPROM 持久化、单 ADC）。
+
+> 同一芯片可有多个产品板（如 ESP32-C2 有 Nano / Dev / Module 三块），它们共用 `esp32:esp32:esp32c2` 这个 FQBN，区别仅在于 `-DBOARD_XXX` 宏决定的引脚。
 
 ## 上传步骤
 
@@ -193,7 +206,7 @@ A：检查波特率是否为 115200，开发板是否选错（C2 选成 C3 会�
 A：确认手机已连接 `ESP-Light-Switch`，并输入 `http://192.168.4.1`（不是 https）。
 
 **Q：亮度调节无效 / 网页没有亮度滑条**
-A：ESP32-C2/C3 请确认 `LIGHT_PWM_PIN` 与实际灯控引脚一致。ESP8285 本身**不支持亮度**（无 PWM 调光，灯为开关量），网页会自动隐藏亮度卡片，属正常现象。
+A：ESP32-C2/C3 与 ESP8285 都支持亮度 PWM 调光（ESP8285 用 `analogWrite` 软件 PWM）。若网页仍无亮度滑条，确认对应产品板的 `BRIGHTNESS_SUPPORTED` 是否为 1；继电器类模块建议亮度保持 100%，中间值会令其抖动/蜂鸣。
 
 **Q：电流显示不准**
 A：根据实际分流电阻和放大器增益修改校准常量，必要时用万用表对比校准。
