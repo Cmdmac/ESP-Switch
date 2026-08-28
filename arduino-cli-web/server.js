@@ -143,6 +143,7 @@ if (CLI === 'arduino-cli') {
     process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Programs', 'arduino-cli', exe),
     process.env.PROGRAMFILES && path.join(process.env.PROGRAMFILES, 'Arduino CLI', exe),
     path.join(os.homedir(), '.arduino15', 'bin', exe),
+    path.join(os.homedir(), 'bin', exe),
     '/usr/local/bin/' + exe,
     '/opt/homebrew/bin/' + exe,
   ].filter(Boolean);
