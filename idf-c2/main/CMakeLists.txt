@@ -1,9 +1,10 @@
-# REQUIRES 里的 arduino 组件名 = 组件管理器安装目录名：
-# espressif/arduino-esp32 -> managed_components/espressif__arduino-esp32
+# REQUIRES 里的 arduino 组件名 = 本地 core 链接目录名：
+# server.js 在 C2 构建前会把本机 Arduino IDE / arduino-cli 已装的 esp32 core
+# 链接为 idf-c2/components/arduino-esp32（Windows 用 junction，mac/Linux 用 symlink）
 idf_component_register(
     SRCS "main.cpp"
     INCLUDE_DIRS "."
-    REQUIRES espressif__arduino-esp32 esp_wifi esp_netif esp_event esp_common driver esp_hw_support
+    REQUIRES arduino-esp32 esp_wifi esp_netif esp_event esp_common driver esp_hw_support
 )
 
 # main.cpp 是薄壳：include ../../ESP32_Light_Switch/ESP32_Light_Switch.ino（唯一固件源码）。
@@ -16,7 +17,7 @@ idf_component_register(
 # 这里不改 arduino 组件自身的文件，而是在本工程内给它补 include 目录与链接。
 # 组件列表按需扩展：把缺失的组件名同时加到上面 REQUIRES 与下面的列表即可。
 set(ARDUINO_MISSING_REQUIRES esp_wifi esp_netif esp_event esp_common driver esp_hw_support)
-idf_component_get_property(_arduino_lib espressif__arduino-esp32 COMPONENT_LIB)
+idf_component_get_property(_arduino_lib arduino-esp32 COMPONENT_LIB)
 if(_arduino_lib)
   foreach(_c ${ARDUINO_MISSING_REQUIRES})
     idf_component_get_property(_c_lib ${_c} COMPONENT_LIB)

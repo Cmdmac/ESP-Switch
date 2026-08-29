@@ -82,6 +82,8 @@ Testing/
 # ESP-IDF (idf-c2) build artifacts & generated config
 idf-c2/build/
 idf-c2/managed_components/
+# 构建时由 server.js 链接本机 esp32 core，不提交
+idf-c2/components/
 idf-c2/sdkconfig
 idf-c2/sdkconfig.old
 idf-c2/dependencies.lock

@@ -45,33 +45,35 @@ cd esp-idf
 
 > IDF 5.3.x 都行（arduino-esp32 3.3.11 要求 IDF ∈ [5.3.0, 6.1.99]）。工具链装在 `~/.espressif/tools/`，python venv 在 `~/.espressif/python_env/idf5.3_py*_env`。
 
-## 4. arduino-esp32 组件（ESP-IDF 组件管理器）
+## 4. arduino-esp32 组件（复用本机已装的 core）
 
-不需要单独下载源码，也**不需要软链**——arduino-esp32 通过官方组件管理器引入，
-声明文件是 `idf-c2/main/idf_component.yml`：
+**不需要单独下载源码**——直接复用 Arduino IDE / arduino-cli 已下载好的 esp32 core。
+`server.js` 在每次 C2 构建前自动探测并链接（Windows 用 junction，mac/Linux 用 symlink）：
 
-```yaml
-dependencies:
-  espressif/arduino-esp32: "^3.3.11"
+```
+ARDUINO_DIRECTORIES_DATA (环境变量)                      # 自定义数据目录
+%LOCALAPPDATA%\Arduino15\packages\esp32\hardware\esp32   # Windows · Arduino IDE 2.x
+~/.arduino15\packages\esp32\hardware\esp32               # Windows · arduino-cli
+~/.arduino15/packages/esp32/hardware/esp32               # Linux · arduino-cli
+~/Library/Arduino15/packages/esp32/hardware/esp32        # macOS · Arduino IDE 2.x
 ```
 
-首次构建时 `idf.py` 会自动从 ESP 组件仓库把它（及其依赖）下载到
-`idf-c2/managed_components/espressif__arduino-esp32`，之后复用缓存：
+链接目标：`idf-c2/components/arduino-esp32`（组件名 = 目录名 `arduino-esp32`）。
 
 ```bash
-cd idf-c2 && idf.py set-target esp32c2   # 首次：联网拉取组件，耗时较长
-ls managed_components/espressif__arduino-esp32/variants/esp32c2/pins_arduino.h   # 验证
+# 前提：Arduino IDE → 文件 → 首选项 → 附加开发板管理器网址 添加 esp32 索引
+#      然后 工具 → 开发板 → 开发板管理器 搜索 esp32 安装（本工程要求 3.3.x，兼容 IDF 5.5）
+# 验证（网页控制台 /api/status 或手动）：
+ls ~/.arduino15/packages/esp32/hardware/esp32/   # 或 macOS 的 ~/Library/Arduino15
 ```
 
-> 相比旧的软链方案（symlink 到 `~/Library/Arduino15/...` 或 `~/.arduino15/...`）：
-> 不依赖本机 arduino-cli 数据目录，跨平台一致；也不再需要修改任何第三方文件。
-> 组件在 CMake 中的名字是 `espressif__arduino-esp32`（见 `main/CMakeLists.txt` 的 REQUIRES）。
-> 目录 `managed_components/`、`dependencies.lock` 已在 .gitignore 中，不会提交。
+> 只建链接、**绝不修改 core 自身的任何文件**；core 升级后链接自动指向新版本。
+> 若探测失败，网页控制台会提示先安装 esp32 开发板。
 
 ## 5. arduino 组件缺失依赖：由工程侧补齐
 
-arduino-esp32 自带的 CMakeLists.txt 未声明 `esp_wifi` / `esp_netif` / `esp_event` 等依赖，
-而 IDF 5.x 起这类组件不再默认加入公共依赖，直接编译会报
+arduino-esp32 自带的 CMakeLists.txt 未声明 `esp_wifi` / `esp_netif` / `esp_event` 等依赖
+（3.3.4 与 3.3.11 均如此），而 IDF 5.x 起这类组件不再默认加入公共依赖，直接编译会报
 `WiFiType.h includes esp_wifi_types.h ... not in the requirements list`。
 
 本工程**不改 arduino 组件自身的文件**，而是在 `idf-c2/main/CMakeLists.txt` 里：
@@ -80,12 +82,12 @@ arduino-esp32 自带的 CMakeLists.txt 未声明 `esp_wifi` / `esp_netif` / `esp
 
 ```cmake
 set(ARDUINO_MISSING_REQUIRES esp_wifi esp_netif esp_event esp_common driver esp_hw_support)
-idf_component_get_target(_arduino_lib espressif__arduino-esp32)
+idf_component_get_property(_arduino_lib arduino-esp32 COMPONENT_LIB)
 ...
 ```
 
 > 若后续又缺别的组件，把组件名同时加进上面的 `REQUIRES` 和 `ARDUINO_MISSING_REQUIRES` 两个列表即可。
-> 注意不要加 `esp_mac`（IDF 中无此组件）；`mdns` 之类已由组件管理器自动拉取。
+> 注意不要加 `esp_mac`（IDF 中无此组件）。
 
 ## 6. 项目内配置（每台机器必改 / 或设环境变量）
 
