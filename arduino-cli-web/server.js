@@ -872,23 +872,27 @@ const server = http.createServer((req, res) => {
     const fqbn = url.searchParams.get('fqbn') || '';
     let dir = null;
     if (type === 'arduino') {
-      if (!isValidFqbn(fqbn) || !isValidBoardMacro(board)) { res.writeHead(400); res.end('bad params'); return; }
+      if (!isValidFqbn(fqbn) || !isValidBoardMacro(board)) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, reason: '参数不合法' })); return; }
       dir = buildDirFor(fqbn, board);
     } else if (type === 'idf') {
-      if (!isValidC2Board(board)) { res.writeHead(400); res.end('bad board'); return; }
+      if (!isValidC2Board(board)) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, reason: '参数不合法' })); return; }
       dir = idfBuildDirFor(board);
     } else {
-      res.writeHead(400); res.end('bad type'); return;
+      res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, reason: '未知类型' })); return;
     }
-    if (!dir || !fs.existsSync(dir)) { res.writeHead(404); res.end('no dir'); return; }
+    if (!dir || !fs.existsSync(dir)) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, reason: '构建目录不存在：' + dir + '（该板型可能尚未编译，或临时构建目录已被系统清理）' }));
+      return;
+    }
     try {
       const opener = isWin() ? 'explorer' : (process.platform === 'darwin' ? 'open' : 'xdg-open');
       spawn(opener, [dir], { detached: true, stdio: 'ignore' }).unref();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, dir }));
     } catch (e) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, reason: e.message }));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, reason: '打开失败：' + e.message }));
     }
     return;
   }
