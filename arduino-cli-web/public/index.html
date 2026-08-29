@@ -361,6 +361,8 @@ $('btnStop').onclick = () => {
 
 $('btnClear').onclick = () => { logEl.innerHTML = ''; };
 $('refreshPort').onclick = refreshPorts;
+// 构建产物页的"刷新"：同时刷新端口下拉与产物列表（此前未绑定，点了没反应）
+$('btnArtifactsRefresh').onclick = () => { refreshPorts(); loadArtifacts(); };
 $('board').onchange = syncBoardMacro;
 
 function fmtSize(b) {
