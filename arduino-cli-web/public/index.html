@@ -61,6 +61,10 @@
   .dlbtn { display:inline-block; padding: 7px 14px; border-radius: 8px; background: var(--ok); color:#fff; text-decoration:none; font-size: 13px; white-space: nowrap; flex-shrink: 0; }
   .dlbtn:hover { background: #15803d; }
   .fw-item { display:flex; align-items:center; justify-content:space-between; gap:12px; border:1px solid var(--border); border-radius:8px; padding:8px 12px; }
+  /* 刷写日志弹窗 */
+  .modal-mask { position:fixed; inset:0; background:rgba(15,23,42,.55); display:flex; align-items:center; justify-content:center; z-index:100; }
+  .modal { background:#fff; border-radius:12px; padding:16px; width:min(760px, 92vw); max-height:82vh; display:flex; flex-direction:column; gap:10px; box-shadow:0 20px 50px rgba(0,0,0,.25); }
+  .modal-head { display:flex; justify-content:space-between; align-items:center; font-size:13px; color:var(--muted); }
   .fw-info { min-width: 0; flex: 1 1 auto; }
   .fw-name { font-family: var(--mono); font-size:13px; word-break: break-all; }
   .fw-size { font-size:12px; color: var(--muted); }
@@ -204,9 +208,15 @@
       </div>
     </div>
     <div id="artlist"><div class="fw-size" style="padding:12px;">（加载中…）</div></div>
-    <div class="card" id="artflashcard" hidden>
-      <div class="log-head">烧写日志 <span id="artrunlabel"></span></div>
-      <pre id="artlog" style="background:#0f172a;color:#e2e8f0;font-family:var(--mono);font-size:12.5px;padding:12px;border-radius:8px;min-height:120px;height:28vh;overflow:auto;white-space:pre-wrap;word-break:break-all;margin:0;"></pre>
+  </div>
+  <!-- 刷写日志弹窗（modal） -->
+  <div id="artModal" class="modal-mask" hidden>
+    <div class="modal">
+      <div class="modal-head">
+        <span>烧写日志 <span id="artrunlabel"></span></span>
+        <button class="ghost" id="btnArtClose">关闭</button>
+      </div>
+      <pre id="artlog" style="background:#0f172a;color:#e2e8f0;font-family:var(--mono);font-size:12.5px;padding:12px;border-radius:8px;min-height:200px;height:52vh;overflow:auto;white-space:pre-wrap;word-break:break-all;margin:0;"></pre>
     </div>
   </div>
 
@@ -573,12 +583,12 @@ function appendArt(cls, text) {
 function flashArtifact(btn) {
   if (artFlashBusy) { appendArt('sys', '⚠ 已有烧写任务进行中'); return; }
   const port = $('artport').value;
-  if (!port || port.startsWith('（')) { appendArt('err', '请先选择有效烧写端口'); $('artflashcard').hidden = false; return; }
+  if (!port || port.startsWith('（')) { appendArt('err', '请先选择有效烧写端口'); $('artModal').hidden = false; return; }
   const type = btn.dataset.type;
   const fqbn = decodeURIComponent(btn.dataset.fqbn || '');
   const board = decodeURIComponent(btn.dataset.board);
   const name = decodeURIComponent(btn.dataset.name || '');
-  $('artflashcard').hidden = false;
+  $('artModal').hidden = false;
   artLogEl.innerHTML = '';
   artFlashBusy = true;
   btn.disabled = true;
@@ -600,6 +610,8 @@ function flashArtifact(btn) {
   });
   es.onerror = () => { appendArt('err', '⚠ EventSource 连接断开'); es.close(); artFlashBusy = false; document.querySelectorAll('.flashbtn').forEach(b => b.disabled = false); };
 }
+// 关闭刷写日志弹窗（隐藏即可，后台任务继续跑，日志仍会追加）
+$('btnArtClose').onclick = () => { $('artModal').hidden = true; };
 // 事件委托：产物列表里的刷写按钮（列表会动态刷新）
 document.addEventListener('click', e => {
   const b = e.target.closest('.flashbtn');
