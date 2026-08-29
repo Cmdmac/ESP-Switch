@@ -207,7 +207,7 @@
           <select id="artport" style="min-width:140px;"></select>
           <label style="display:flex;align-items:center;gap:5px;font-size:13px;color:var(--muted);white-space:nowrap;cursor:pointer;" title="勾选后刷写前先整片擦除 flash（bootloader / NVS / PHY / OTA 全清），达到全新出厂状态">
             <input type="checkbox" id="eraseFirst" checked style="width:14px;height:14px;"/>
-            擦除
+            刷写时擦除
           </label>
           <button class="ghost" id="btnArtifactsRefresh">刷新</button>
         </div>
@@ -565,15 +565,13 @@ async function loadArtifacts() {
     const tag = g.type === 'idf' ? '<span class="pill" style="background:#fef3c7;color:#92400e;font-size:12px;padding:3px 10px;">IDF</span>'
                                 : '<span class="pill" style="background:#dcfce7;color:#166534;font-size:12px;padding:3px 10px;">Arduino</span>';
     // 刷写 = 烧该板型的整套固件（bootloader/分区/应用，与具体 .bin 文件无关），
-    // 所以按钮放在板型分组标题行，每组一个；文件行只保留下载。
+    // 每组只放一个（主 bin 行，与下载按钮并排对齐）
     const main = (g.files && g.files[0]) || { name: '' };
     const gdata = `data-type="${g.type}" data-fqbn="${encodeURIComponent(g.fqbn || '')}" data-board="${encodeURIComponent(g.board)}" data-boardname="${encodeURIComponent(g.boardName)}" data-name="${encodeURIComponent(main.name)}"`;
     html += `<div class="card" style="margin-bottom:12px;">
-      <div class="art-group-title">${tag} ${g.boardName}
-        <button class="ghost flashbtn" style="margin-left:auto;" ${gdata} title="把该板型的编译产物整套烧写到所选串口（含 bootloader/分区/应用，不重新编译）">刷写</button>
-      </div>
+      <div class="art-group-title">${tag} ${g.boardName}</div>
       <div style="display:flex;flex-direction:column;gap:8px;">`;
-    g.files.forEach(f => {
+    g.files.forEach((f, i) => {
       let url;
       if (g.type === 'idf') url = `/api/idf/download?board=${encodeURIComponent(g.board)}&file=${encodeURIComponent(f.name)}`;
       else url = `/api/download?fqbn=${encodeURIComponent(g.fqbn)}&board=${encodeURIComponent(g.board)}&file=${encodeURIComponent(f.name)}`;
@@ -583,7 +581,10 @@ async function loadArtifacts() {
           <div class="art-file-name">${dname}<span class="art-file-size">${fmtSize(f.size)}</span></div>
           <div class="art-file-time">生成于 ${fmtTime(f.mtime)}</div>
         </div>
-        <a href="${url}" class="dlbtn" download="${dname}">下载</a>
+        <div style="display:flex;gap:8px;flex-shrink:0;">
+          ${i === 0 ? `<button class="ghost flashbtn" ${gdata} title="把该板型的编译产物整套烧写到所选串口（含 bootloader/分区/应用，不重新编译）">刷写</button>` : ''}
+          <a href="${url}" class="dlbtn" download="${dname}">下载</a>
+        </div>
       </div>`;
     });
     html += '</div></div>';
