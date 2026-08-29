@@ -71,17 +71,41 @@ if %errorlevel%==0 (
 )
 
 rem ---------- 3. arduino-cli config yaml ----------
+rem Prefer the Arduino IDE 2.x data dir (%LOCALAPPDATA%\Arduino15) so the
+rem CLI reuses cores already installed by the IDE; fall back to the
+rem arduino-cli / IDE 1.x default (%USERPROFILE%\.arduino15).
+set "CLI_DATA=%ARDUINO15%"
+if exist "%LOCALAPPDATA%\Arduino15\packages\esp32\hardware\esp32" set "CLI_DATA=%LOCALAPPDATA%\Arduino15"
+if exist "%LOCALAPPDATA%\Arduino15\packages\esp8266\hardware\esp8266" set "CLI_DATA=%LOCALAPPDATA%\Arduino15"
 echo.
 echo [3/5] Checking arduino-cli config ...
+echo   data dir: !CLI_DATA!
 if exist "%CLI_YAML%" (
-  echo   [OK] config exists: %CLI_YAML%
+  > "%TEMP%\esp_yaml.txt" type "%CLI_YAML%"
+  findstr /i /c:"data: !CLI_DATA!" "%TEMP%\esp_yaml.txt" >nul
+  if errorlevel 1 (
+    echo   [..] updating config to point at !CLI_DATA! ...
+    > "%CLI_YAML%" (
+      echo directories:
+      echo   data: !CLI_DATA!
+      echo   downloads: !CLI_DATA!\staging
+      echo board_manager:
+      echo   additional_urls:
+      echo     - https://espressif.github.io/arduino-esp32/package_esp32_index.json
+      echo     - https://arduino.esp8266.com/stable/package_esp8266com_index.json
+    )
+    echo   [OK] config updated.
+  ) else (
+    echo   [OK] config exists and points at the right data dir.
+  )
+  del /q "%TEMP%\esp_yaml.txt" >nul 2>nul
 ) else (
   echo   [..] creating %CLI_YAML% ...
-  if not exist "%ARDUINO15%" mkdir "%ARDUINO15%"
+  if not exist "!CLI_DATA!" mkdir "!CLI_DATA!"
   > "%CLI_YAML%" (
     echo directories:
-    echo   data: %ARDUINO15%
-    echo   downloads: %ARDUINO15%\staging
+    echo   data: !CLI_DATA!
+    echo   downloads: !CLI_DATA!\staging
     echo board_manager:
     echo   additional_urls:
     echo     - https://espressif.github.io/arduino-esp32/package_esp32_index.json
