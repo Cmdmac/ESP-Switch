@@ -571,6 +571,9 @@ async function loadArtifacts() {
     const gdata = `data-type="${g.type}" data-fqbn="${encodeURIComponent(g.fqbn || '')}" data-board="${encodeURIComponent(g.board)}" data-boardname="${encodeURIComponent(g.boardName)}" data-name="${encodeURIComponent(main.name)}"`;
     html += `<div class="card" style="margin-bottom:12px;">
       <div class="art-group-title">${tag} ${g.boardName}
+        <button class="ghost opendirbtn" title="打开该板型的构建目录" data-type="${g.type}" data-board="${encodeURIComponent(g.board)}" data-fqbn="${encodeURIComponent(g.fqbn || '')}" style="padding:4px 8px;line-height:0;">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        </button>
         <button class="ghost flashbtn" style="margin-left:auto;" ${gdata} title="把该板型的编译产物整套烧写到所选串口（含 bootloader/分区/应用，不重新编译）">刷写</button>
       </div>
       <div style="display:flex;flex-direction:column;gap:8px;">`;
@@ -640,10 +643,20 @@ function flashArtifact(btn) {
 }
 // 关闭刷写日志弹窗（隐藏即可，后台任务继续跑，日志仍会追加）
 $('btnArtClose').onclick = () => { $('artModal').hidden = true; };
-// 事件委托：产物列表里的刷写按钮（列表会动态刷新）
+// 事件委托：产物列表里的刷写 / 打开目录按钮（列表会动态刷新）
 document.addEventListener('click', e => {
   const b = e.target.closest('.flashbtn');
-  if (b) flashArtifact(b);
+  if (b) { flashArtifact(b); return; }
+  const od = e.target.closest('.opendirbtn');
+  if (od) {
+    const q = `type=${encodeURIComponent(od.dataset.type)}&board=${encodeURIComponent(od.dataset.board)}&fqbn=${encodeURIComponent(od.dataset.fqbn || '')}`;
+    fetch('/api/open-dir?' + q).then(r => {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(d => {
+      if (!d.ok) alert('打开目录失败：' + (d.reason || '未知错误'));
+    }).catch(() => alert('打开目录失败：目录不存在或系统不支持'));
+  }
 });
 
 loadMeta();

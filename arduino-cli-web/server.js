@@ -865,6 +865,34 @@ const server = http.createServer((req, res) => {
 
   // 构建产物 Tab：把指定板型的产物烧写到串口（arduino 用 arduino-cli upload --input-dir 直接烧已有 .bin；
   // idf 用 idf.py -B <board> flash）。不重新编译。
+  if (p === '/api/open-dir') {
+    // 用系统文件管理器打开某板型的构建目录（explorer / open / xdg-open）
+    const type = url.searchParams.get('type');
+    const board = url.searchParams.get('board') || '';
+    const fqbn = url.searchParams.get('fqbn') || '';
+    let dir = null;
+    if (type === 'arduino') {
+      if (!isValidFqbn(fqbn) || !isValidBoardMacro(board)) { res.writeHead(400); res.end('bad params'); return; }
+      dir = buildDirFor(fqbn, board);
+    } else if (type === 'idf') {
+      if (!isValidC2Board(board)) { res.writeHead(400); res.end('bad board'); return; }
+      dir = idfBuildDirFor(board);
+    } else {
+      res.writeHead(400); res.end('bad type'); return;
+    }
+    if (!dir || !fs.existsSync(dir)) { res.writeHead(404); res.end('no dir'); return; }
+    try {
+      const opener = isWin() ? 'explorer' : (process.platform === 'darwin' ? 'open' : 'xdg-open');
+      spawn(opener, [dir], { detached: true, stdio: 'ignore' }).unref();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, dir }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, reason: e.message }));
+    }
+    return;
+  }
+
   if (p === '/api/stream/flash') {
     const type = url.searchParams.get('type');
     const fqbn = url.searchParams.get('fqbn') || '';
