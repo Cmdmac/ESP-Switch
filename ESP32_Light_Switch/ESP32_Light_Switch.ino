@@ -414,6 +414,11 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         <b style="color:#007aff;" id="mdnsHint">http://espswitch-XXXX.local</b><br>
         若该地址打不开，请用上方“当前地址”里的 IP 访问（如 http://192.168.x.x）。
       </div>
+      <div class="note" id="wifiDone" style="display:none;margin-top:12px;padding:10px;border:1px solid #4caf50;color:#166534;background:#f0fdf4;border-radius:8px;line-height:1.7;">
+        配置成功！请把手机切回家庭 Wi-Fi「<b id="wifiDoneSsid"></b>」，网络恢复后本页将自动打开设备地址
+        <b style="color:#007aff;" id="wifiDoneUrl">http://espswitch-XXXX.local</b>。<br>
+        若未自动打开，请手动访问该地址。
+      </div>
       <div class="note" id="netWarn" style="display:none;margin-top:12px;padding:10px;border:1px solid #e08;color:#c00;background:#fff5f5;border-radius:8px;line-height:1.7;">
         <b>设备处于热点模式</b>：请用手机连接设备热点 <b>ESPSwitch-XXXX</b>（密码 12345678），浏览器打开 <b>http://192.168.4.1</b>，在此页重设家里 Wi-Fi（务必 2.4GHz）。连上后自动切到局域网。
       </div>
@@ -434,6 +439,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 
 <script>
 const $ = id => document.getElementById(id);
+let _mdnsUrl = '';   // 设备 mDNS 地址（refresh 时更新），配网成功后自动打开用
 // 电流自动切换单位：<1A 显示整数 mA（无小数），≥1A 显示 A（2 位小数）
 function fmtCurrent(a) {
   if (!(typeof a === 'number') || !isFinite(a) || a < 0) a = 0;
@@ -485,7 +491,21 @@ async function saveWiFi() {
   // 用 POST 表单体传参，避免部分 ESP32 WebServer 版本对「POST + 查询串」不解析导致密码变空
   const body = 'ssid=' + encodeURIComponent(ssid) + '&password=' + encodeURIComponent(pwd);
   await fetch('/api/wifi', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: body});
-  $('status').innerText = '已保存，正在重启连接 Wi-Fi...';
+  // 设备即将重启并关闭热点：提示用户切回家庭 Wi-Fi；网络恢复（online）后自动打开设备页面
+  if ($('wifiDoneSsid')) $('wifiDoneSsid').innerText = ssid;
+  if ($('wifiDoneUrl')) $('wifiDoneUrl').innerText = _mdnsUrl || 'http://espswitch-XXXX.local';
+  if ($('wifiDone')) $('wifiDone').style.display = 'block';
+  $('status').innerText = '配置成功！请把手机切回「' + ssid + '」Wi-Fi，连接后本页将自动打开设备页面...';
+  window.addEventListener('online', () => {
+    if (window._onceAutoOpen) return; window._onceAutoOpen = true;   // 只触发一次
+    if ($('wifiDone')) $('wifiDone').innerText = '网络已恢复，正在打开设备页面 ...';
+    if (_mdnsUrl) {
+      // 延迟 6 秒：给设备「重启 → 连 Wi-Fi → 注册 mDNS」留时间
+      setTimeout(() => { location.href = _mdnsUrl; }, 6000);
+    } else {
+      if ($('wifiDone')) $('wifiDone').innerText = '未能获取设备地址，请手动打开上方显示的 mDNS 地址（或路由器里查设备 IP）。';
+    }
+  });
 }
 
 async function forgetWiFi() {
@@ -551,7 +571,7 @@ async function refresh() {
     $('status').innerText = '已连接 (' + d.ip + ') · 运行 ' + upH + ':' + upM + ':' + upS;
     var fv = (d.ver && d.ver.length) ? d.ver : '?';
     $('subtitle').innerText = 'ESP Light Switch · v' + fv;
-    if (d.mdns && $('mdnsHint')) $('mdnsHint').innerText = 'http://' + d.mdns;
+    if (d.mdns) { _mdnsUrl = 'http://' + d.mdns; if ($('mdnsHint')) $('mdnsHint').innerText = _mdnsUrl; }
   } catch(e) {
     $('status').innerText = '连接失败，请检查网络后刷新';
   }
