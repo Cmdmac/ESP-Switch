@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 340" font-family="'Microsoft YaHei','PingFang SC',sans-serif">
+  <rect width="760" height="340" rx="14" fill="#f6f8fa"/>
+  <text x="380" y="36" text-anchor="middle" font-size="18" font-weight="bold" fill="#24292f">打开配网页，填写家里 Wi-Fi</text>
+
+  <!-- 手机浏览器地址栏 -->
+  <rect x="40" y="62" width="290" height="44" rx="10" fill="#fff" stroke="#d0d7de"/>
+  <rect x="52" y="74" width="266" height="20" rx="10" fill="#f0f2f5"/>
+  <text x="185" y="89" text-anchor="middle" font-size="13" fill="#0969da">http://192.168.4.1</text>
+
+  <!-- 配网页表单 -->
+  <rect x="40" y="120" width="290" height="190" rx="14" fill="#fff" stroke="#d0d7de"/>
+  <text x="185" y="148" text-anchor="middle" font-size="15" font-weight="bold" fill="#24292f">网络设置</text>
+  <text x="62" y="176" font-size="12" fill="#57606a">Wi-Fi 名称</text>
+  <rect x="62" y="184" width="246" height="30" rx="7" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="74" y="204" font-size="12" fill="#8c959f">我家路由器名（2.4GHz）</text>
+  <text x="62" y="236" font-size="12" fill="#57606a">密码</text>
+  <rect x="62" y="244" width="246" height="30" rx="7" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="74" y="264" font-size="12" fill="#8c959f">••••••••</text>
+  <rect x="62" y="284" width="246" height="30" rx="7" fill="#0969da"/>
+  <text x="185" y="304" text-anchor="middle" font-size="13" font-weight="bold" fill="#fff">保存并连接 Wi-Fi</text>
+
+  <!-- 箭头 -->
+  <path d="M345 200 H400" stroke="#6e7781" stroke-width="3" fill="none" marker-end="url(#ar)"/>
+
+  <!-- 说明卡片 -->
+  <rect x="410" y="70" width="320" height="240" rx="14" fill="#fff" stroke="#d0d7de"/>
+  <text x="570" y="100" text-anchor="middle" font-size="14" font-weight="bold" fill="#24292f">填写提示</text>
+  <g font-size="12.5" fill="#57606a">
+    <text x="430" y="128">• 请使用家里路由器的 <tspan font-weight="bold" fill="#0969da">2.4GHz</tspan> 频段</text>
+    <text x="430" y="152">（5GHz 可能连接不上）</text>
+    <text x="430" y="182">• 密码区分大小写，确认无误</text>
+    <text x="430" y="212">• 保存后设备会重启并尝试联网</text>
+    <text x="430" y="242">• 若密码留空＝不修改已存配置</text>
+    <text x="430" y="272">• 填错也没关系：长按设备按键</text>
+    <text x="430" y="292">  3 秒可恢复出厂重新配网</text>
+  </g>
+
+  <text x="380" y="325" text-anchor="middle" font-size="12" fill="#8c959f">配网页在设备热点下打开，不需要手机能上外网</text>
+  <defs><marker id="ar" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#6e7781"/></marker></defs>
+</svg>

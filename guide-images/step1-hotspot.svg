@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 320" font-family="'Microsoft YaHei','PingFang SC',sans-serif">
+  <rect width="760" height="320" rx="14" fill="#f6f8fa"/>
+  <text x="380" y="36" text-anchor="middle" font-size="18" font-weight="bold" fill="#24292f">连接设备热点 ESPSwitch-XXXX</text>
+
+  <!-- 手机 -->
+  <rect x="40" y="70" width="210" height="220" rx="18" fill="#fff" stroke="#d0d7de"/>
+  <rect x="50" y="60" width="190" height="16" rx="8" fill="#d0d7de"/>
+  <text x="145" y="100" text-anchor="middle" font-size="14" font-weight="bold" fill="#24292f">Wi-Fi 设置</text>
+  <rect x="62" y="115" width="166" height="40" rx="8" fill="#f0f6ff" stroke="#0969da"/>
+  <text x="145" y="134" text-anchor="middle" font-size="13" font-weight="bold" fill="#0969da">ESPSwitch-1A2B</text>
+  <text x="145" y="150" text-anchor="middle" font-size="11" fill="#57606a">需密码 · 设备编号每台不同</text>
+  <rect x="62" y="163" width="166" height="30" rx="8" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="145" y="183" text-anchor="middle" font-size="12" fill="#8c959f">其他路由器...</text>
+  <rect x="62" y="205" width="166" height="34" rx="8" fill="#fffbe9" stroke="#9a6700"/>
+  <text x="145" y="227" text-anchor="middle" font-size="12" fill="#9a6700">密码：12345678</text>
+  <text x="145" y="262" text-anchor="middle" font-size="11" fill="#8c959f">连接后手机可能提示"无互联网"</text>
+  <text x="145" y="278" text-anchor="middle" font-size="11" fill="#8c959f">属正常，继续下一步即可</text>
+
+  <!-- 设备 -->
+  <g transform="translate(520,90)">
+    <rect x="0" y="0" width="170" height="170" rx="16" fill="#e6f4ea" stroke="#1a7f37"/>
+    <circle cx="85" cy="55" r="26" fill="#fff" stroke="#1a7f37"/>
+    <path d="M70 55 q8 -16 18 0 q10 16 28 0" fill="none" stroke="#1a7f37" stroke-width="4" stroke-linecap="round"/>
+    <text x="85" y="112" text-anchor="middle" font-size="13" font-weight="bold" fill="#1a7f37">ESPSwitch-1A2B</text>
+    <text x="85" y="134" text-anchor="middle" font-size="12" fill="#57606a">设备发出的热点</text>
+    <text x="85" y="152" text-anchor="middle" font-size="12" fill="#57606a">首次使用自动开启</text>
+  </g>
+
+  <!-- 无线连接示意 -->
+  <path d="M270 160 Q350 90 500 120" stroke="#0969da" stroke-width="3" fill="none" stroke-dasharray="8 6" marker-end="url(#wifi)"/>
+  <text x="380" y="110" text-anchor="middle" font-size="12" fill="#0969da">手机 ←→ 设备热点（2.4GHz）</text>
+
+  <text x="380" y="305" text-anchor="middle" font-size="12" fill="#8c959f">热点名格式：ESPSwitch + 设备编号（XXXX = MAC 后两字节）</text>
+  <defs><marker id="wifi" markerWidth="10" markerHeight="10" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#0969da"/></marker></defs>
+</svg>

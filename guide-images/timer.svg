@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 320" font-family="'Microsoft YaHei','PingFang SC',sans-serif">
+  <rect width="760" height="320" rx="14" fill="#f6f8fa"/>
+  <text x="380" y="36" text-anchor="middle" font-size="18" font-weight="bold" fill="#24292f">定时开关：按真实时钟每天自动执行</text>
+
+  <!-- 一天时间线 -->
+  <rect x="60" y="120" width="640" height="6" rx="3" fill="#e6e8eb"/>
+  <circle cx="205" cy="123" r="14" fill="#fffbe9" stroke="#9a6700"/>
+  <text x="205" y="128" text-anchor="middle" font-size="11" fill="#9a6700">开</text>
+  <circle cx="555" cy="123" r="14" fill="#e6f4ea" stroke="#1a7f37"/>
+  <text x="555" y="128" text-anchor="middle" font-size="11" fill="#1a7f37">关</text>
+
+  <!-- 时间标注 -->
+  <text x="205" y="88" text-anchor="middle" font-size="15" font-weight="bold" fill="#9a6700">07:00 自动开灯</text>
+  <text x="555" y="88" text-anchor="middle" font-size="15" font-weight="bold" fill="#1a7f37">23:00 自动关灯</text>
+
+  <!-- 白天/黑夜示意 -->
+  <rect x="60" y="140" width="145" height="40" rx="8" fill="#fffbe9" opacity="0.9"/>
+  <text x="132" y="165" text-anchor="middle" font-size="12" fill="#9a6700">白天开灯区间</text>
+  <rect x="350" y="140" width="205" height="40" rx="8" fill="#eef1f6" opacity="0.9"/>
+  <text x="452" y="165" text-anchor="middle" font-size="12" fill="#57606a">夜间关灯区间</text>
+
+  <!-- 时钟图标 -->
+  <g transform="translate(60,205)">
+    <circle cx="0" cy="0" r="26" fill="#fff" stroke="#0969da"/>
+    <path d="M0 -15 V0 L10 8" fill="none" stroke="#0969da" stroke-width="3" stroke-linecap="round"/>
+    <text x="36" y="4" font-size="13" fill="#24292f">NTP 网络时间</text>
+    <text x="36" y="24" font-size="12" fill="#57606a">设备联网后自动同步北京时间</text>
+  </g>
+
+  <!-- 提示 -->
+  <g transform="translate(320,205)">
+    <rect x="0" y="-30" width="380" height="80" rx="10" fill="#fff" stroke="#d0d7de"/>
+    <text x="20" y="-8" font-size="12.5" fill="#57606a">• 支持跨夜设置：23:00 开 → 次日 07:00 关</text>
+    <text x="20" y="14" font-size="12.5" fill="#57606a">• 设置后记得点"保存"</text>
+    <text x="20" y="36" font-size="12.5" fill="#57606a">• 设备未联网（热点模式）时按开机时间粗略计时，联网后恢复正常</text>
+  </g>
+</svg>

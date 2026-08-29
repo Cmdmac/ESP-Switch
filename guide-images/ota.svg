@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 320" font-family="'Microsoft YaHei','PingFang SC',sans-serif">
+  <rect width="760" height="320" rx="14" fill="#f6f8fa"/>
+  <text x="380" y="36" text-anchor="middle" font-size="18" font-weight="bold" fill="#24292f">固件升级（OTA）：网页无线升级，不用拆机</text>
+
+  <!-- 步骤1：选择文件 -->
+  <g>
+    <rect x="30" y="80" width="210" height="160" rx="12" fill="#fff" stroke="#d0d7de"/>
+    <text x="135" y="106" text-anchor="middle" font-size="13" font-weight="bold" fill="#24292f">① 选择固件文件</text>
+    <rect x="55" y="120" width="160" height="40" rx="8" fill="#f6f8fa" stroke="#d0d7de"/>
+    <text x="135" y="140" text-anchor="middle" font-size="12" fill="#0969da">开关固件 v1.1.0.bin</text>
+    <text x="135" y="158" text-anchor="middle" font-size="11" fill="#8c959f">选择 .bin 文件</text>
+    <text x="135" y="195" text-anchor="middle" font-size="12" fill="#57606a">只使用厂家提供的固件</text>
+    <text x="135" y="215" text-anchor="middle" font-size="12" fill="#57606a">打开"固件升级"卡片</text>
+  </g>
+
+  <!-- 步骤2：上传 -->
+  <g>
+    <rect x="275" y="80" width="210" height="160" rx="12" fill="#fff" stroke="#d0d7de"/>
+    <text x="380" y="106" text-anchor="middle" font-size="13" font-weight="bold" fill="#24292f">② 上传升级中</text>
+    <rect x="300" y="128" width="160" height="14" rx="7" fill="#e6e8eb"/>
+    <rect x="300" y="128" width="112" height="14" rx="7" fill="#0969da"/>
+    <text x="380" y="162" text-anchor="middle" font-size="12" fill="#57606a">70%</text>
+    <text x="380" y="196" text-anchor="middle" font-size="12" font-weight="bold" fill="#cf222e">切勿断电！</text>
+    <text x="380" y="216" text-anchor="middle" font-size="11.5" fill="#57606a">断电会导致设备变砖</text>
+  </g>
+
+  <!-- 步骤3：重启 -->
+  <g>
+    <rect x="520" y="80" width="210" height="160" rx="12" fill="#e6f4ea" stroke="#1a7f37"/>
+    <text x="625" y="106" text-anchor="middle" font-size="13" font-weight="bold" fill="#1a7f37">③ 自动重启完成</text>
+    <circle cx="625" cy="150" r="28" fill="#fff" stroke="#1a7f37"/>
+    <text x="625" y="158" text-anchor="middle" font-size="20">✓</text>
+    <text x="625" y="200" text-anchor="middle" font-size="12" fill="#1a7f37">升级成功，设备重启</text>
+    <text x="625" y="222" text-anchor="middle" font-size="11.5" fill="#57606a">Wi-Fi / 定时等设置保留</text>
+  </g>
+
+  <!-- 箭头 -->
+  <path d="M245 160 H268" stroke="#6e7781" stroke-width="3" fill="none" marker-end="url(#ar)"/>
+  <path d="M490 160 H513" stroke="#6e7781" stroke-width="3" fill="none" marker-end="url(#ar)"/>
+
+  <text x="380" y="285" text-anchor="middle" font-size="12" fill="#8c959f">升级完成后页面自动刷新，设备即运行新版本；期间保持手机与设备在同一 Wi-Fi</text>
+  <defs><marker id="ar" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#6e7781"/></marker></defs>
+</svg>
