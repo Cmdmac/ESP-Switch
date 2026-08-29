@@ -286,7 +286,9 @@ async function refreshPorts() {
     $('port').innerHTML = html;
     $('idfport').innerHTML = html;
     $('artport').innerHTML = html;
-    if (cur) { $('port').value = cur; $('idfport').value = cur; $('artport').value = cur; }
+    // 仅当旧选中端口仍在列表里才恢复选中，否则让下拉停在第一个有效项
+    // （旧值已拔出时强行赋 value 会失败，下拉变成空白，看起来像"刷新没用"）
+    if (cur && r.ports.includes(cur)) { $('port').value = cur; $('idfport').value = cur; $('artport').value = cur; }
   } catch(e) {}
 }
 
