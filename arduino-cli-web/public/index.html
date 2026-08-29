@@ -194,15 +194,13 @@
 
   <div class="tab-panel" id="panel-artifacts" hidden>
     <div class="card">
-      <div class="row" style="justify-content:space-between; align-items:center;">
+      <div class="row" style="justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
         <div class="log-head" style="margin:0;">全部板型编译产物（含生成时间）</div>
-        <button class="ghost" id="btnArtifactsRefresh">刷新</button>
-      </div>
-    </div>
-    <div class="card" style="margin-bottom:12px;">
-      <div class="field" style="margin:0;">
-        <label>烧写端口</label>
-        <select id="artport"></select>
+        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+          <label for="artport" style="font-size:12px; color:var(--muted); white-space:nowrap;">烧写端口</label>
+          <select id="artport" style="min-width:140px;"></select>
+          <button class="ghost" id="btnArtifactsRefresh">刷新</button>
+        </div>
       </div>
     </div>
     <div id="artlist"><div class="fw-size" style="padding:12px;">（加载中…）</div></div>
