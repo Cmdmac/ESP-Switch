@@ -445,42 +445,66 @@ function cmpVer(a, b) {
   return 0;
 }
 
+// 给 arduino-esp32 core 的 CMakeLists.txt 补 REQUIRES esp_wifi（幂等）。
+// WiFiType.h 依赖 esp_wifi，但部分 core 打包的 CMakeLists 未声明，导致
+// "Compilation failed because WiFiType.h includes esp_wifi_types.h ... not in
+// the requirements list of 'arduino'"。缺失时自动追加（保留续行符）。
+function patchArduinoCmake(coreDir) {
+  const cm = path.join(coreDir, 'CMakeLists.txt');
+  try {
+    let txt = fs.readFileSync(cm, 'utf8');
+    if (/\besp_wifi\b/.test(txt)) return false;
+    txt = txt.replace(/(REQUIRES\s+)([^\n]*)/, (m, kw, rest) => {
+      const cont = /\\\s*$/.test(rest);            // 行尾续行符
+      const trimmed = rest.replace(/\\\s*$/, '');
+      return kw + trimmed + ' esp_wifi' + (cont ? ' \\' : '');
+    });
+    fs.writeFileSync(cm, txt);
+    return true;
+  } catch (e) { return false; }
+}
+
 function ensureArduinoComponent() {
   const link = path.join(IDF_C2_DIR, 'components', 'arduino');
-  // 已有效（目录且含 CMakeLists.txt，即真 arduino-esp32 core）则跳过
+  let coreDir = null;
+  // 链接已有效（目录且含 CMakeLists.txt，即真 arduino-esp32 core）则直接采用
   try {
     const st = fs.lstatSync(link);
     const real = st.isSymbolicLink() ? fs.realpathSync(link) : link;
-    if (fs.statSync(real).isDirectory() && fs.existsSync(path.join(real, 'CMakeLists.txt'))) {
-      return { ok: true, real };
-    }
+    if (fs.statSync(real).isDirectory() && fs.existsSync(path.join(real, 'CMakeLists.txt'))) coreDir = real;
   } catch (e) { /* 失效/缺失，继续重建 */ }
 
-  const dataDirs = [
-    process.env.ARDUINO_DIRECTORIES_DATA,
-    isWin() && process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Arduino15'),
-    path.join(os.homedir(), '.arduino15'),
-  ].filter(Boolean);
-  let found = null;
-  for (const dd of dataDirs) {
-    const hwRoot = path.join(dd, 'packages', 'esp32', 'hardware', 'esp32');
-    let vers = [];
+  if (!coreDir) {
+    const dataDirs = [
+      process.env.ARDUINO_DIRECTORIES_DATA,
+      isWin() && process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Arduino15'),
+      path.join(os.homedir(), '.arduino15'),
+    ].filter(Boolean);
+    let found = null;
+    for (const dd of dataDirs) {
+      const hwRoot = path.join(dd, 'packages', 'esp32', 'hardware', 'esp32');
+      let vers = [];
+      try {
+        vers = fs.readdirSync(hwRoot).filter(v => /^\d+(\.\d+)*$/.test(v)).sort(cmpVer);
+      } catch (e) { continue; }
+      if (vers.length) { found = path.join(hwRoot, vers[vers.length - 1]); break; }
+    }
+    if (!found) {
+      return { ok: false, reason: '未找到 arduino-esp32 core，请先执行: arduino-cli core install esp32:esp32' };
+    }
     try {
-      vers = fs.readdirSync(hwRoot).filter(v => /^\d+(\.\d+)*$/.test(v)).sort(cmpVer);
-    } catch (e) { continue; }
-    if (vers.length) { found = path.join(hwRoot, vers[vers.length - 1]); break; }
+      fs.rmSync(link, { force: true, recursive: true });
+      fs.mkdirSync(path.dirname(link), { recursive: true });
+      fs.symlinkSync(found, link, isWin() ? 'junction' : 'dir');
+      coreDir = found;
+    } catch (e) {
+      return { ok: false, reason: '重建组件链接失败: ' + e.message };
+    }
   }
-  if (!found) {
-    return { ok: false, reason: '未找到 arduino-esp32 core，请先执行: arduino-cli core install esp32:esp32' };
-  }
-  try {
-    fs.rmSync(link, { force: true, recursive: true });
-    fs.mkdirSync(path.dirname(link), { recursive: true });
-    fs.symlinkSync(found, link, isWin() ? 'junction' : 'dir');
-    return { ok: true, real: found, relinked: true };
-  } catch (e) {
-    return { ok: false, reason: '重建组件链接失败: ' + e.message };
-  }
+
+  // 补 REQUIRES esp_wifi（幂等，core 升级后缺失会自动再补）
+  const patched = patchArduinoCmake(coreDir);
+  return { ok: true, real: coreDir, patched };
 }
 
 // 以 SSE 方式流式执行一条 idf.py 命令：source IDF 环境后，在 idf-c2 目录跑构建/烧录。
