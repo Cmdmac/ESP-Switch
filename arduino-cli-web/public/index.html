@@ -504,7 +504,8 @@ function switchTab(name) {
 $('tabArduino').onclick = () => switchTab('arduino');
 $('tabIdf').onclick = () => switchTab('idf');
 $('tabArtifacts').onclick = () => switchTab('artifacts');
-$('btnArtifactsRefresh').onclick = loadArtifacts;
+// 注意：btnArtifactsRefresh 的绑定在上面（refreshPorts + loadArtifacts），
+// 此处不要再重复绑定，否则会覆盖掉"刷新端口"的行为。
 
 // ===== 构建产物 Tab：按板型分组显示固件 + 生成时间 =====
 function fmtTime(ms) {
