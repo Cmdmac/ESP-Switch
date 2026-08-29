@@ -152,7 +152,7 @@
 
   <div class="tab-panel" id="panel-idf" hidden>
   <div class="card">
-    <div class="log-head">ESP32-C2（ESP-IDF 构建 · 复用本机 IDF 5.3.2 + arduino-esp32 3.3.11 组件）</div>
+    <div class="log-head" id="idftitle">ESP32-C2（ESP-IDF 构建）</div>
     <div class="row">
       <div class="field">
         <label>C2 产品板</label>
@@ -247,6 +247,14 @@ async function loadMeta() {
     if (allOk) { dot.style.background='#dcfce7'; dot.style.color='#166534'; }
     else { dot.style.background='#fee2e2'; dot.style.color='#991b1b'; }
     dot.title = (s.idfDir || '') + '\n' + (s.idfVenv || '');
+    // C2 页标题按实际环境动态显示（此前是写死的 "复用本机 IDF 5.3.2 + arduino-esp32 3.3.11"）
+    const idfT = $('idftitle');
+    if (idfT) {
+      const bits = [];
+      if (s.idfVersion) bits.push('IDF ' + s.idfVersion);
+      if (s.arduinoComponent) bits.push('arduino-esp32 ' + s.arduinoComponent);
+      idfT.textContent = 'ESP32-C2（ESP-IDF 构建' + (bits.length ? ' · ' + bits.join(' + ') : '') + '）';
+    }
   } catch(e) { }
   // boards
   try {

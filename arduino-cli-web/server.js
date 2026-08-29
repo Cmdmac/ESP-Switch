@@ -547,10 +547,26 @@ const server = http.createServer((req, res) => {
       sketch: SKETCH_DIR,
       sketchExists: fs.existsSync(SKETCH_DIR),
       idfDir: IDF_DIR,
+      idfVersion: (IDF_DIR.match(/v?(\d+\.\d+\.\d+)/) || [])[1] || '',
       idfExists: fs.existsSync(IDF_EXPORT),
       idfVenv: IDF_VENV,
       idfVenvExists: fs.existsSync(IDF_VENV_PY),
       idfC2Exists: fs.existsSync(IDF_C2_DIR),
+      // arduino-esp32 组件实际版本：组件管理器安装目录的 package.json，缺失时回退到 yml 声明
+      arduinoComponent: (() => {
+        try {
+          const pkg = path.join(IDF_C2_DIR, 'managed_components', 'espressif__arduino-esp32', 'package.json');
+          if (fs.existsSync(pkg)) {
+            const v = JSON.parse(fs.readFileSync(pkg, 'utf8')).version;
+            if (v) return 'v' + v;
+          }
+        } catch (_) { /* fallthrough */ }
+        try {
+          const yml = fs.readFileSync(path.join(IDF_C2_DIR, 'main', 'idf_component.yml'), 'utf8');
+          const m = yml.match(/arduino-esp32:\s*["']?([^\s"']+)/);
+          return m ? m[1].replace(/^[\^~=>< ]+/, '') : '';
+        } catch (_) { return ''; }
+      })(),
     }));
     return;
   }
