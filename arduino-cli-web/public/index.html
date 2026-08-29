@@ -238,7 +238,6 @@ function ts() {
   return d.toTimeString().slice(0,8);
 }
 function append(cls, text) {
-  const atBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 40;
   (Array.isArray(text) ? text : String(text).split('\n')).forEach(line => {
     if (line === '') return;
     const span = document.createElement('div');
@@ -246,7 +245,8 @@ function append(cls, text) {
     span.textContent = '[' + ts() + '] ' + line;
     logEl.appendChild(span);
   });
-  if (atBottom) logEl.scrollTop = logEl.scrollHeight;
+  // 始终自动滚动到最新日志
+  logEl.scrollTop = logEl.scrollHeight;
 }
 
 async function loadMeta() {
@@ -434,7 +434,6 @@ function showFirmware(d) {
 const idfLogEl = $('idflog');
 let idfBusy = false;
 function appendIdf(cls, text) {
-  const atBottom = idfLogEl.scrollHeight - idfLogEl.scrollTop - idfLogEl.clientHeight < 40;
   (Array.isArray(text) ? text : String(text).split('\n')).forEach(line => {
     if (line === '') return;
     const span = document.createElement('div');
@@ -442,7 +441,8 @@ function appendIdf(cls, text) {
     span.textContent = '[' + ts() + '] ' + line;
     idfLogEl.appendChild(span);
   });
-  if (atBottom) idfLogEl.scrollTop = idfLogEl.scrollHeight;
+  // 始终自动滚动到最新日志
+  idfLogEl.scrollTop = idfLogEl.scrollHeight;
 }
 function idfBoardMacro() {
   const o = $('idfboard').selectedOptions[0];
@@ -599,7 +599,6 @@ async function loadArtifacts() {
 const artLogEl = $('artlog');
 let artFlashBusy = false;
 function appendArt(cls, text) {
-  const atBottom = artLogEl.scrollHeight - artLogEl.scrollTop - artLogEl.clientHeight < 40;
   (Array.isArray(text) ? text : String(text).split('\n')).forEach(line => {
     if (line === '') return;
     const span = document.createElement('div');
@@ -607,7 +606,8 @@ function appendArt(cls, text) {
     span.textContent = '[' + ts() + '] ' + line;
     artLogEl.appendChild(span);
   });
-  if (atBottom) artLogEl.scrollTop = artLogEl.scrollHeight;
+  // 始终自动滚动到最新日志
+  artLogEl.scrollTop = artLogEl.scrollHeight;
 }
 function flashArtifact(btn) {
   if (artFlashBusy) { appendArt('sys', '⚠ 已有烧写任务进行中'); return; }
