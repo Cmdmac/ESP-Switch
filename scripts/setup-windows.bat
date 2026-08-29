@@ -58,7 +58,7 @@ if %errorlevel%==0 (
   where winget >nul 2>nul
   if !errorlevel!==0 (
     echo   Installing arduino-cli via winget ...
-    winget install --id Arduino.arduino-cli -e --accept-source-agreements --accept-package-agreements
+    winget install --id ArduinoSA.CLI -e --accept-source-agreements --accept-package-agreements
     if !errorlevel!==0 (
       echo   [OK] arduino-cli installed via winget.
     ) else (
@@ -91,6 +91,10 @@ if exist "%CLI_YAML%" (
 )
 
 rem ---------- 4. optional: install cores (big download) ----------
+rem Reload PATH first: a winget install from step 2 is not visible in the
+rem current cmd session until a new one starts, which would make step 4
+rem skip the core install.
+call :refresh_path
 echo.
 echo [4/5] Arduino cores (esp32 / esp8266) - optional, large download.
 set /p INSTALL_CORES="  Install cores now? [y/N]: "
@@ -127,18 +131,18 @@ if /i "!INSTALL_CORES!"=="y" (
 
 rem ---------- 5. ESP-IDF (optional, for C2 builds) ----------
 echo.
-echo [5/5] ESP-IDF (needed for ESP32-C2 builds) - optional, ~3GB.
+echo [5/5] ESP-IDF ^(needed for ESP32-C2 builds^) - optional, ~3GB.
 if defined IDF_PATH (
   echo   [OK] IDF_PATH=%IDF_PATH%
 ) else if exist "D:\Espressif\frameworks" (
-  echo   [OK] ESP-IDF found at D:\Espressif (official installer layout).
+  echo   [OK] ESP-IDF found at D:\Espressif ^(official installer layout^).
 ) else if exist "C:\Espressif\frameworks" (
-  echo   [OK] ESP-IDF found at C:\Espressif (official installer layout).
+  echo   [OK] ESP-IDF found at C:\Espressif ^(official installer layout^).
 ) else (
   echo   [..] ESP-IDF not detected.
   echo        For C2 builds install the official ESP-IDF Windows installer:
   echo        https://dl.espressif.com/dl/esp-idf/
-  echo        (choose ESP-IDF v5.5.x, it supports esp32c2 target)
+  echo        ^(choose ESP-IDF v5.5.x, it supports esp32c2 target^)
 )
 
 echo.
@@ -159,39 +163,92 @@ pause
 exit /b 0
 
 rem ============================================================
-rem  Subroutine: direct download of arduino-cli (latest release)
+rem  Subroutine: direct download of arduino-cli
+rem  Uses the official stable URL on downloads.arduino.cc:
+rem  no GitHub API (no rate limit, no JSON parsing), works with TLS 1.2.
 rem ============================================================
 :install_arduino_cli_direct
-echo   Downloading latest arduino-cli ...
+echo   Downloading arduino-cli (latest) ...
 if not exist "%ADB_DIR%" mkdir "%ADB_DIR%"
+set "CLI_ZIP=%TEMP%\arduino-cli-win64.zip"
+if exist "%CLI_ZIP%" del /q "%CLI_ZIP%" >nul 2>nul
+
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$r = Invoke-RestMethod -Uri 'https://api.github.com/repos/arduino/arduino-cli/releases/latest'; " ^
-  "$a = $r.assets | Where-Object { $_.name -match 'Windows_64bit.*\\.zip$' } | Select-Object -First 1; " ^
-  "if (-not $a) { Write-Host 'No matching asset found'; exit 1 }; " ^
-  "Invoke-WebRequest -Uri $a.browser_download_url -OutFile \"%ADB_DIR%\\arduino-cli.zip\"; " ^
-  "Expand-Archive -Path \"%ADB_DIR%\\arduino-cli.zip\" -DestinationPath \"%ADB_DIR%\" -Force"
-if %errorlevel%==0 (
-  rem move the exe from extracted subfolder to the root
-  for /f "delims=" %%f in ('dir /b /s "%ADB_DIR%\arduino-cli.exe" 2^>nul') do (
-    copy /y "%%f" "%ADB_DIR%\arduino-cli.exe" >nul
-  )
-  rem add to user PATH if not present
-  set "OLD_PATH="
-  for /f "skip=2 tokens=2,*" %%a in ('reg query "HKCU\Environment" /v Path 2^>nul') do set "OLD_PATH=%%b"
-  echo !OLD_PATH! | find /i "%ADB_DIR%" >nul
-  if !errorlevel!==0 (
-    if defined OLD_PATH (
-      setx PATH "!OLD_PATH!;%ADB_DIR%" >nul
-    ) else (
-      setx PATH "%ADB_DIR%" >nul
-    )
-    echo   [OK] arduino-cli installed and added to user PATH (new terminal required).
-  ) else (
-    echo   [OK] arduino-cli installed (already in PATH).
-  )
-  del /q "%ADB_DIR%\arduino-cli.zip" 2>nul
-) else (
-  echo   [FAIL] download failed. Get arduino-cli manually from:
-  echo          https://github.com/arduino/arduino-cli/releases
+  "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; " ^
+  "try { " ^
+  "  Invoke-WebRequest -Uri 'https://downloads.arduino.cc/arduino-cli/arduino-cli_latest_Windows_64bit.zip' -OutFile '%CLI_ZIP%' -UseBasicParsing; " ^
+  "  Write-Host '  downloaded'; " ^
+  "} catch { " ^
+  "  Write-Host ('  [FAIL] ' + $_.Exception.Message); " ^
+  "  exit 1 " ^
+  "}"
+rem NOTE: use delayed expansion here - inside a parenthesized if/else block
+rem cmd expands %errorlevel% while parsing, before the command above runs.
+if not "!errorlevel!"=="0" goto cli_direct_failed
+if not exist "%CLI_ZIP%" goto cli_direct_failed
+
+echo   Extracting to %ADB_DIR% ...
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "try { " ^
+  "  Expand-Archive -Path '%CLI_ZIP%' -DestinationPath '%ADB_DIR%' -Force; " ^
+  "  Write-Host '  extracted'; " ^
+  "} catch { " ^
+  "  Write-Host ('  [FAIL] ' + $_.Exception.Message); " ^
+  "  exit 1 " ^
+  "}"
+if not "!errorlevel!"=="0" goto cli_direct_failed
+
+del /q "%CLI_ZIP%" >nul 2>nul
+call :add_adb_dir_to_path
+exit /b 0
+
+:cli_direct_failed
+echo   [FAIL] download/extract failed. Install arduino-cli manually from:
+echo          https://github.com/arduino/arduino-cli/releases
+echo          (or: winget install --id ArduinoSA.CLI -e)
+exit /b 1
+
+rem ============================================================
+rem  Subroutine: reload PATH from the registry into this session
+rem ============================================================
+:refresh_path
+set "SYS_PATH="
+set "USER_PATH="
+for /f "skip=2 tokens=2,*" %%a in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v Path 2^>nul') do (
+  if not defined SYS_PATH set "SYS_PATH=%%b"
 )
+for /f "skip=2 tokens=2,*" %%a in ('reg query "HKCU\Environment" /v Path 2^>nul') do (
+  if not defined USER_PATH set "USER_PATH=%%b"
+)
+if defined SYS_PATH if defined USER_PATH set "PATH=!SYS_PATH!;!USER_PATH!"
+if defined SYS_PATH if not defined USER_PATH set "PATH=!SYS_PATH!"
+exit /b 0
+
+rem ============================================================
+rem  Subroutine: add %ADB_DIR% to the user PATH (once)
+rem  The PATH value commonly contains parentheses, e.g.
+rem  "C:\Program Files (x86)\...". Piping such a value through
+rem  `echo !VAR! | find ...` re-parses it and breaks cmd
+rem  ("The syntax of the command is incorrect"), so the value is
+rem  written to a temp file and checked with findstr instead.
+rem ============================================================
+:add_adb_dir_to_path
+set "CURPATH="
+for /f "skip=2 tokens=2,*" %%a in ('reg query "HKCU\Environment" /v Path 2^>nul') do (
+  if not defined CURPATH set "CURPATH=%%b"
+)
+set "PATHCHK=%TEMP%\esp_switch_path.txt"
+> "%PATHCHK%" echo(!CURPATH!
+findstr /i /c:"%ADB_DIR%" "%PATHCHK%" >nul
+if errorlevel 1 (
+  if defined CURPATH (
+    setx PATH "!CURPATH!;%ADB_DIR%" >nul
+  ) else (
+    setx PATH "%ADB_DIR%" >nul
+  )
+  echo   [OK] arduino-cli installed and added to user PATH (new terminal required).
+) else (
+  echo   [OK] arduino-cli installed (already in PATH).
+)
+del /q "%PATHCHK%" >nul 2>nul
 exit /b 0
