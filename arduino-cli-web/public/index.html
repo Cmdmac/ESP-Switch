@@ -18,6 +18,8 @@
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   * { box-sizing: border-box; }
+  /* 确保 hidden 属性始终生效，防止被 display:flex 等样式覆盖（modal 曾一进页面就弹出） */
+  [hidden] { display: none !important; }
   body {
     margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
     background: var(--bg); color: var(--text); padding: 20px;
