@@ -121,7 +121,9 @@ const IDF_VENV_PY = path.join(IDF_VENV_BIN, isWin() ? 'python.exe' : 'python3');
 // 防止 node 进程继承的 PATH/残留变量导致探测到无 click 的 python（症状 "Cannot import module click"）。
 function idfShell(innerCmd) {
   if (isWin()) {
-    return `$env:IDF_PATH='${IDF_DIR}'; $env:IDF_PYTHON_ENV_PATH='${IDF_VENV}'; `
+    // 强制 UTF-8 输出：否则 PowerShell 5.1 以系统代码页(GBK)输出，SSE 按 UTF-8 解码会乱码
+    return `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; `
+      + `$env:IDF_PATH='${IDF_DIR}'; $env:IDF_PYTHON_ENV_PATH='${IDF_VENV}'; `
       + `$env:PATH='${IDF_VENV_BIN};' + $env:PATH; `
       + `& '${IDF_EXPORT}' *> $null; Set-Location '${IDF_C2_DIR}'; ${innerCmd}`;
   }
@@ -626,9 +628,14 @@ const server = http.createServer((req, res) => {
     // 上次失败可能留下非 CMake 的残留目录，先清理避免 set-target fullclean 报错
     cleanStaleIdfBuildDir(board);
     const idfCmd = action === 'flash' ? `idf.py -B "${bdir}" -p "${port}" flash` : `idf.py -B "${bdir}" build`;
-    const setStep = doSet ? `idf.py -B "${bdir}" set-target ${target} && ` : '';
+    // PowerShell 5.1 不支持 &&（PS7+ 语法），Windows 用 $LASTEXITCODE 条件执行；mac/Linux 保持 &&
+    let inner = idfCmd;
+    if (doSet) {
+      const setCmd = `idf.py -B "${bdir}" set-target ${target}`;
+      inner = isWin() ? `${setCmd}; if ($LASTEXITCODE -eq 0) { ${idfCmd} }` : `${setCmd} && ${idfCmd}`;
+    }
     // idfShell() 内部已按平台初始化 IDF 环境（Win: export.ps1 / mac-Linux: export.sh）并进入 idf-c2
-    const shell = idfShell(setStep + idfCmd);
+    const shell = idfShell(inner);
     runIdfStream(res, shell, (action === 'flash' ? 'C2 构建并烧录' : 'C2 构建'), board);
     return;
   }
