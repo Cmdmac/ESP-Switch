@@ -388,10 +388,11 @@ function sseSend(res, event, data) {
 }
 
 // 收集 buildDir 下所有 .bin 固件产物（递归，按主 app bin 优先排序）。
-// 产物已由 ensureBoardNamedArtifacts 重命名为板子名，这里直接全收。
+// 优先返回板子名副本（ensureBoardNamedArtifacts 生成的）；老目录没有副本时
+// 回退显示原始 sketch 名（前端 prettyFw 兜底显示板子名）。
 function collectFirmware(buildDir) {
-  const out = [];
-  if (!fs.existsSync(buildDir)) return out;
+  const raw = [], named = [];
+  if (!fs.existsSync(buildDir)) return raw;
   (function walk(dir) {
     let names;
     try { names = fs.readdirSync(dir); } catch (e) { return; }
@@ -400,16 +401,21 @@ function collectFirmware(buildDir) {
       let st;
       try { st = fs.statSync(full); } catch (e) { continue; }
       if (st.isDirectory()) walk(full);
-      else if (n.endsWith('.bin')) out.push({ name: n, size: st.size });
+      else if (n.endsWith('.bin')) {
+        const item = { name: n, size: st.size };
+        if (n.startsWith('ESP32_Light_Switch.ino')) raw.push(item);  // 原始 sketch 名（arduino-cli upload 依赖，勿删）
+        else named.push(item);                                       // 板子名副本
+      }
     }
   })(buildDir);
+  const list = named.length ? named : raw;
   const mainBin = n => /\.(bootloader|partitions|merged)\.bin$/.test(n) ? 0 : 1;  // 主 app bin 优先
-  out.sort((a, b) => {
+  list.sort((a, b) => {
     const am = mainBin(a.name), bm = mainBin(b.name);
     if (am !== bm) return bm - am;
     return b.size - a.size;
   });
-  return out;
+  return list;
 }
 
 // 由 BOARD_XXX 宏取板子显示名（BOARDS / C2_BOARDS）
@@ -418,8 +424,10 @@ function boardDisplayName(macro) {
   return b ? b.name : macro;
 }
 
-// 编译成功后，把 sketch 名产物（ESP32_Light_Switch.ino.xxx.bin）重命名为板子名，
-// 不保留原文件（全量重编可接受）；旧板子名文件先删再 rename，避免残留。
+// 编译成功后，把 sketch 名产物（ESP32_Light_Switch.ino.xxx.bin）复制成板子名副本。
+// 原文件必须保留：arduino-cli upload 读取 build.options.json 里记录的原始文件名，
+// 重命名会导致 esptool 找不到文件（No such file or directory）。副本总是覆盖，
+// 保证 UI/下载/烧写日志展示的是最新内容。
 function ensureBoardNamedArtifacts(buildDir, board) {
   const bname = boardDisplayName(board);
   if (!bname || !fs.existsSync(buildDir)) return;
@@ -433,7 +441,7 @@ function ensureBoardNamedArtifacts(buildDir, board) {
       if (st.isDirectory()) walk(full);
       else if (n.startsWith('ESP32_Light_Switch.ino') && n.endsWith('.bin')) {
         const dst = path.join(dir, n.replace(/^ESP32_Light_Switch\.ino/, bname));
-        try { if (dst !== full) { fs.rmSync(dst, { force: true }); fs.renameSync(full, dst); } } catch (_) {}
+        try { if (dst !== full) fs.copyFileSync(full, dst); } catch (_) {}
       }
     }
   })(buildDir);
@@ -442,9 +450,9 @@ function ensureBoardNamedArtifacts(buildDir, board) {
 // 收集 idf-c2 构建产物（指定板型的 build/<BOARD_XXX> 下所有 .bin，按主 app bin 优先排序）。
 // 产物已由 ensureIdfBoardNamedArtifacts 重命名为板子名，这里直接全收。
 function collectIdfFirmware(board) {
-  const out = [];
+  const raw = [], named = [];
   const root = idfBuildDirFor(board);
-  if (!fs.existsSync(root)) return out;
+  if (!fs.existsSync(root)) return raw;
   (function walk(dir) {
     let names;
     try { names = fs.readdirSync(dir); } catch (e) { return; }
@@ -453,19 +461,25 @@ function collectIdfFirmware(board) {
       let st;
       try { st = fs.statSync(full); } catch (e) { continue; }
       if (st.isDirectory()) walk(full);
-      else if (n.endsWith('.bin')) out.push({ name: n, size: st.size });
+      else if (n.endsWith('.bin')) {
+        const item = { name: n, size: st.size };
+        if (n.startsWith('esp32_light_switch_c2.') || n.startsWith('idf-c2.')) raw.push(item);  // 原始工程名（idf.py flash 依赖）
+        else named.push(item);                                                                  // 板子名副本
+      }
     }
   })(root);
+  const list = named.length ? named : raw;
   const mainBin = n => /\.(bootloader|partitions)\.bin$/.test(n) ? 0 : 1;  // 主 app bin 优先
-  out.sort((a, b) => {
+  list.sort((a, b) => {
     const am = mainBin(a.name), bm = mainBin(b.name);
     if (am !== bm) return bm - am;
     return b.size - a.size;
   });
-  return out;
+  return list;
 }
 
-// IDF 产物（esp32_light_switch_c2.xxx.bin / idf-c2.xxx.bin）重命名为板子名，不保留原文件
+// IDF 产物（esp32_light_switch_c2.xxx.bin / idf-c2.xxx.bin）复制成板子名副本。
+// 原文件必须保留（idf.py flash 从 project_description.json 读原始名路径）。
 function ensureIdfBoardNamedArtifacts(bdir, board) {
   const bname = boardDisplayName(board);
   if (!bname || !fs.existsSync(bdir)) return;
@@ -479,10 +493,34 @@ function ensureIdfBoardNamedArtifacts(bdir, board) {
       if (st.isDirectory()) walk(full);
       else if ((n.startsWith('esp32_light_switch_c2.') || n.startsWith('idf-c2.')) && n.endsWith('.bin')) {
         const dst = path.join(dir, n.replace(/^(esp32_light_switch_c2|idf-c2)\./, bname + '.'));
-        try { if (dst !== full) { fs.rmSync(dst, { force: true }); fs.renameSync(full, dst); } } catch (_) {}
+        try { if (dst !== full) fs.copyFileSync(full, dst); } catch (_) {}
       }
     }
   })(bdir);
+}
+
+// 自愈：此前"重命名"方案把 sketch 名产物 rename 成了板子名，导致 arduino-cli upload
+// 按 build.options.json 里的原始名找不到文件。upload 前若发现原始名缺失、但有板子名
+// 副本，就从副本复制回原始名（无需重新编译即可恢复烧写）。
+function restoreSketchNamedArtifacts(buildDir, board) {
+  const bname = boardDisplayName(board);
+  if (!bname || !fs.existsSync(buildDir)) return;
+  const esc = bname.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp('^' + esc);
+  (function walk(dir) {
+    let names;
+    try { names = fs.readdirSync(dir); } catch (e) { return; }
+    for (const n of names) {
+      const full = path.join(dir, n);
+      let st;
+      try { st = fs.statSync(full); } catch (e) { continue; }
+      if (st.isDirectory()) walk(full);
+      else if (re.test(n) && n.endsWith('.bin')) {
+        const orig = path.join(dir, n.replace(re, 'ESP32_Light_Switch.ino'));
+        try { if (orig !== full && !fs.existsSync(orig)) fs.copyFileSync(full, orig); } catch (_) {}
+      }
+    }
+  })(buildDir);
 }
 
 // 扫描 BUILD_BASE 下所有 arduino 板型的编译产物目录（目录名 = fqbn_<BOARD_XXX>）
@@ -908,6 +946,8 @@ const server = http.createServer((req, res) => {
       if (!isValidFqbn(fqbn) || !isValidBoardMacro(board)) { res.writeHead(400); res.end('bad params'); return; }
       const buildDir = buildDirFor(fqbn, board);
       if (!fs.existsSync(buildDir) || !collectFirmware(buildDir).length) { res.writeHead(404); res.end('no artifacts'); return; }
+      // 自愈：确保 sketch 原始名产物存在（arduino-cli upload 按 build.options.json 找原始名）
+      restoreSketchNamedArtifacts(buildDir, board);
       const args = ['upload', '--fqbn', fqbn, '-p', port, '--input-dir', buildDir];
       runStream(res, args, (erase ? '擦除+烧写 ' : '烧写 ') + board, buildDir, fqbn, board, { erase, port });
     } else if (type === 'idf') {
