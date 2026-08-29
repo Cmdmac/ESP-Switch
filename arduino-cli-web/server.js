@@ -201,6 +201,19 @@ function idfBuildDirFor(board) {
   return path.join(IDF_C2_DIR, 'build', (board && isValidC2Board(board)) ? board : 'BOARD_ESP32C2_SWITCH_NANO');
 }
 
+// 构建目录若存在但不是合法 CMake 目录（无 CMakeCache.txt，多为上次失败残留），
+// 先手动删除——否则 set-target 触发 fullclean 时 IDF 会拒绝删除并报退出码 2。
+function cleanStaleIdfBuildDir(board) {
+  const bdir = idfBuildDirFor(board);
+  try {
+    if (fs.existsSync(bdir) && !fs.existsSync(path.join(bdir, 'CMakeCache.txt'))) {
+      fs.rmSync(bdir, { recursive: true, force: true });
+      return true;
+    }
+  } catch (e) { /* 删除失败不阻塞构建，交给 IDF 报错 */ }
+  return false;
+}
+
 // ---- 工具函数 ----
 
 // 异步执行一条命令并取 stdout，带超时兜底（子进程挂起也不阻塞事件循环）。
@@ -649,6 +662,8 @@ const server = http.createServer((req, res) => {
     const target = 'esp32c2';
     // 按板型分构建目录：build/<BOARD_XXX>，切换板型互不覆盖
     const bdir = idfBuildDirFor(board);
+    // 上次失败可能留下非 CMake 的残留目录，先清理避免 set-target fullclean 报错
+    cleanStaleIdfBuildDir(board);
     const idfCmd = action === 'flash' ? `idf.py -B "${bdir}" -p "${port}" flash` : `idf.py -B "${bdir}" build`;
     const setStep = doSet ? `idf.py -B "${bdir}" set-target ${target} && ` : '';
     // idfShell() 内部已按平台初始化 IDF 环境（Win: export.ps1 / mac-Linux: export.sh）并进入 idf-c2
