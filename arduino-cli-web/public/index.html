@@ -218,6 +218,10 @@
         <span>烧写日志 <span id="artrunlabel"></span></span>
         <button class="ghost" id="btnArtClose">关闭</button>
       </div>
+      <label style="display:flex;align-items:center;gap:6px;padding:8px 12px 0;font-size:13px;cursor:pointer;" title="烧写前先用 esptool 整片擦除 flash：bootloader / NVS / PHY / OTA 数据全部清空，达到全新出厂状态（刷写耗时会长几秒）">
+        <input type="checkbox" id="eraseFirst" style="width:14px;height:14px;"/>
+        全新刷写：先擦除全部 Flash（含 NVS）
+      </label>
       <pre id="artlog" style="background:#0f172a;color:#e2e8f0;font-family:var(--mono);font-size:12.5px;padding:12px;border-radius:8px;min-height:200px;height:52vh;overflow:auto;white-space:pre-wrap;word-break:break-all;margin:0;"></pre>
     </div>
   </div>
@@ -614,17 +618,17 @@ function flashArtifact(btn) {
   artLogEl.innerHTML = '';
   artFlashBusy = true;
   btn.disabled = true;
-  const label = '烧写 ' + dname + ' → ' + bname;
-  appendArt('sys', '▶ ' + label + ' 开始…');
-  $('artrunlabel').textContent = '（烧写中…）';
-  const params = `type=${encodeURIComponent(type)}&fqbn=${encodeURIComponent(fqbn)}&board=${encodeURIComponent(board)}&port=${encodeURIComponent(port)}`;
+  const erase = $('eraseFirst') && $('eraseFirst').checked ? 1 : 0;   // 全新刷写：先整片擦除（含 NVS）
+  appendArt('sys', '▶ ' + (erase ? '擦除+烧写 ' : '烧写 ') + dname + ' → ' + bname + ' 开始…');
+  $('artrunlabel').textContent = erase ? '（擦除中…）' : '（烧写中…）';
+  const params = `type=${encodeURIComponent(type)}&fqbn=${encodeURIComponent(fqbn)}&board=${encodeURIComponent(board)}&port=${encodeURIComponent(port)}&erase=${erase}`;
   const es = new EventSource('/api/stream/flash?' + params);
   es.addEventListener('start', e => appendArt('sys', 'CLI: ' + JSON.parse(e.data).cli));
   es.addEventListener('out', e => appendArt('out', JSON.parse(e.data)));
   es.addEventListener('err', e => appendArt('err', JSON.parse(e.data)));
   es.addEventListener('done', e => {
     const d = JSON.parse(e.data);
-    appendArt(d.code === 0 ? 'done' : 'err', (d.code === 0 ? '✔ ' : '✘ ') + label + ' 结束，退出码 ' + d.code);
+    appendArt(d.code === 0 ? 'done' : 'err', (d.code === 0 ? '✔ ' : '✘ ') + (erase ? '擦除+烧写 ' : '烧写 ') + dname + ' → ' + bname + ' 结束，退出码 ' + d.code);
     $('artrunlabel').textContent = '';
     es.close();
     artFlashBusy = false;

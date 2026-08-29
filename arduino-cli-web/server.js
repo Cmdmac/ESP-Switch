@@ -294,6 +294,85 @@ function isValidPort(s) {
   return s.startsWith('/dev/cu.') || s.startsWith('/dev/tty.');  // macOS/Linux
 }
 
+// 探测本机 arduino-cli / Arduino IDE 数据目录里的 esptool（全新刷写 erase 用）。
+// esp32:   <data>/packages/esp32/tools/esptool_py/<ver>/esptool(.exe|.py)
+// esp8266: <data>/packages/esp8266/tools/espxtool/<ver>/esptool(.exe|.py)
+// 返回 { cmd, args, eraseCmd }：eraseCmd 按版本自适应——esptool 4+（esp32）用
+// 连字符 erase-flash，更早版本（esp8266 espxtool 的 2.x fork）用下划线 erase_flash。
+function findEsptool() {
+  const dataDirs = [
+    process.env.ARDUINO_DIRECTORIES_DATA,
+    isWin() && process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Arduino15'),
+    path.join(os.homedir(), '.arduino15'),
+    path.join(os.homedir(), 'Library', 'Arduino15'),
+  ].filter(Boolean);
+  const roots = [
+    ['esp32', 'esptool_py', 'esptool'],
+    ['esp8266', 'espxtool', 'esptool'],
+  ];
+  for (const dd of dataDirs) {
+    for (const [pkg, toolDir, base] of roots) {
+      const root = path.join(dd, 'packages', pkg, 'tools', toolDir);
+      let vers = [];
+      try { vers = fs.readdirSync(root).filter(v => /^\d/.test(v)).sort(); } catch (e) { continue; }
+      for (let i = vers.length - 1; i >= 0; i--) {
+        const dir = path.join(root, vers[i]);
+        const exe = path.join(dir, base + '.exe');      // Windows 平台
+        const py = path.join(dir, base + '.py');        // mac/Linux 的 python 版
+        const eraseCmd = (pkg === 'esp32' && parseInt(String(vers[i]).split('.')[0], 10) >= 4)
+          ? 'erase-flash' : 'erase_flash';
+        if (isWin() && fs.existsSync(exe)) return { cmd: exe, args: [], eraseCmd };
+        if (!isWin() && fs.existsSync(py)) return { cmd: 'python3', args: [py], eraseCmd };
+        const bin = path.join(dir, base);               // mac/Linux 原生可执行
+        if (!isWin() && fs.existsSync(bin)) {
+          try { fs.accessSync(bin, fs.constants.X_OK); return { cmd: bin, args: [], eraseCmd }; } catch (_) {}
+        }
+      }
+    }
+  }
+  return null;
+}
+
+// 在 SSE 连接上执行 esptool 整片擦除（bootloader/NVS/PHY/OTA 数据全清），
+// 成功（code 0）后回调 next() 继续正常刷写。非 tty 下 esptool 的确认自动通过。
+function runEraseFlash(res, port, next) {
+  const esp = findEsptool();
+  if (!esp) {
+    sseSend(res, 'err', '未找到 esptool，无法擦除。请确认已安装 esp32/esp8266 core，或改用网页控制台外手动执行 esptool.py -p ' + port + ' erase_flash');
+    sseSend(res, 'done', { code: -1 });
+    try { res.end(); } catch (_) {}
+    return;
+  }
+  sseSend(res, 'sys', '▶ 擦除全部 Flash（bootloader / NVS / PHY / OTA 数据将被清空）...');
+  let child;
+  try {
+    child = spawn(esp.cmd, esp.args.concat(['-p', port, esp.eraseCmd]));
+  } catch (e) {
+    sseSend(res, 'err', 'spawn esptool 失败: ' + e.message);
+    sseSend(res, 'done', { code: -1 });
+    try { res.end(); } catch (_) {}
+    return;
+  }
+  child.stdout.on('data', d => sseSend(res, 'out', d.toString()));
+  child.stderr.on('data', d => sseSend(res, 'err', d.toString()));
+  child.on('error', err => {
+    sseSend(res, 'err', 'esptool 启动失败: ' + err.message);
+    sseSend(res, 'done', { code: -1 });
+    try { res.end(); } catch (_) {}
+  });
+  child.on('close', code => {
+    code = code == null ? 0 : code;
+    if (code !== 0) {
+      sseSend(res, 'err', '✘ 擦除失败，退出码 ' + code + '，已中止刷写');
+      sseSend(res, 'done', { code });
+      try { res.end(); } catch (_) {}
+      return;
+    }
+    sseSend(res, 'sys', '✔ 擦除完成，开始刷写 ...');
+    next();
+  });
+}
+
 function sseHeaders(res) {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -461,48 +540,56 @@ function scanIdfArtifacts() {
  * 客户端断开 EventSource 时自动 kill 子进程（对 monitor 尤其重要）。
  * buildDir/fqbn 提供时，命令成功结束后会额外推送 firmware 事件（固件产物清单）。
  */
-function runStream(res, args, label, buildDir, fqbn, board) {
+function runStream(res, args, label, buildDir, fqbn, board, opts = {}) {
   sseHeaders(res);
   sseSend(res, 'start', { label, cli: CLI, args });
 
-  const fullArgs = ['--config-file', CONFIG_FILE].concat(args);
-  let child;
-  try {
-    child = spawn(CLI, fullArgs, { cwd: SKETCH_DIR });
-  } catch (e) {
-    sseSend(res, 'err', 'spawn error: ' + e.message);
-    sseSend(res, 'done', { code: -1 });
-    try { res.end(); } catch (_) {}
-    return;
-  }
-
-  const cleanup = () => { try { child.kill('SIGKILL'); } catch (_) {} };
-  res.on('close', cleanup);
-
-  let stdoutBuf = '';
-  child.stdout.on('data', d => {
-    const s = d.toString();
-    stdoutBuf += s;
-    sseSend(res, 'out', s);
-  });
-  child.stderr.on('data', d => sseSend(res, 'err', d.toString()));
-  child.on('error', err => {
-    sseSend(res, 'err', 'spawn error: ' + err.message);
-    sseSend(res, 'done', { code: -1 });
-    try { res.end(); } catch (_) {}
-  });
-  child.on('close', code => {
-    code = code == null ? 0 : code;
-    if (buildDir && code === 0) {
-      // 生成板子名产物副本（真实文件名），原 sketch 名文件保留给增量编译
-      ensureBoardNamedArtifacts(buildDir, board);
-      const files = collectFirmware(buildDir);
-      const m = stdoutBuf.match(/Sketch uses (\d+) bytes/);
-      sseSend(res, 'firmware', { files, size: m ? parseInt(m[1], 10) : null, fqbn: fqbn || '', board: board || '' });
+  const runUpload = () => {
+    const fullArgs = ['--config-file', CONFIG_FILE].concat(args);
+    let child;
+    try {
+      child = spawn(CLI, fullArgs, { cwd: SKETCH_DIR });
+    } catch (e) {
+      sseSend(res, 'err', 'spawn error: ' + e.message);
+      sseSend(res, 'done', { code: -1 });
+      try { res.end(); } catch (_) {}
+      return;
     }
-    sseSend(res, 'done', { code });
-    try { res.end(); } catch (_) {}
-  });
+
+    const cleanup = () => { try { child.kill('SIGKILL'); } catch (_) {} };
+    res.on('close', cleanup);
+
+    let stdoutBuf = '';
+    child.stdout.on('data', d => {
+      const s = d.toString();
+      stdoutBuf += s;
+      sseSend(res, 'out', s);
+    });
+    child.stderr.on('data', d => sseSend(res, 'err', d.toString()));
+    child.on('error', err => {
+      sseSend(res, 'err', 'spawn error: ' + err.message);
+      sseSend(res, 'done', { code: -1 });
+      try { res.end(); } catch (_) {}
+    });
+    child.on('close', code => {
+      code = code == null ? 0 : code;
+      if (buildDir && code === 0) {
+        // 产物重命名为板子名（不保留 sketch 名原文件）
+        ensureBoardNamedArtifacts(buildDir, board);
+        const files = collectFirmware(buildDir);
+        const m = stdoutBuf.match(/Sketch uses (\d+) bytes/);
+        sseSend(res, 'firmware', { files, size: m ? parseInt(m[1], 10) : null, fqbn: fqbn || '', board: board || '' });
+      }
+      sseSend(res, 'done', { code });
+      try { res.end(); } catch (_) {}
+    });
+  };
+
+  if (opts.erase) {
+    runEraseFlash(res, opts.port, runUpload);
+  } else {
+    runUpload();
+  }
 }
 
 // C2 构建前确认 arduino 依赖清单就位。
@@ -783,19 +870,28 @@ const server = http.createServer((req, res) => {
     const fqbn = url.searchParams.get('fqbn') || '';
     const board = url.searchParams.get('board') || '';
     const port = url.searchParams.get('port') || '';
+    const erase = url.searchParams.get('erase') === '1';   // 全新刷写：先整片擦除（含 NVS）
     if (!isValidPort(port)) { res.writeHead(400); res.end('bad port'); return; }
     if (type === 'arduino') {
       if (!isValidFqbn(fqbn) || !isValidBoardMacro(board)) { res.writeHead(400); res.end('bad params'); return; }
       const buildDir = buildDirFor(fqbn, board);
       if (!fs.existsSync(buildDir) || !collectFirmware(buildDir).length) { res.writeHead(404); res.end('no artifacts'); return; }
       const args = ['upload', '--fqbn', fqbn, '-p', port, '--input-dir', buildDir];
-      runStream(res, args, '烧写 ' + board, buildDir, fqbn, board);
+      runStream(res, args, (erase ? '擦除+烧写 ' : '烧写 ') + board, buildDir, fqbn, board, { erase, port });
     } else if (type === 'idf') {
       if (!isValidC2Board(board)) { res.writeHead(400); res.end('bad board'); return; }
       const bdir = idfBuildDirFor(board);
       if (!fs.existsSync(bdir) || !collectIdfFirmware(board).length) { res.writeHead(404); res.end('no artifacts'); return; }
-      const shell = idfShell(`idf.py -B "${bdir}" -p "${port}" flash`);
-      runIdfStream(res, shell, '烧写 ' + board, board);
+      let flashCmd = `idf.py -B "${bdir}" -p "${port}" flash`;
+      if (erase) {
+        // Windows shell 5.1 无 &&，用 if ($LASTEXITCODE -eq 0) 串联；mac/Linux 用 &&（参考 buildC2 的 set-target 拼接）
+        const eraseCmd = `idf.py -B "${bdir}" -p "${port}" erase-flash`;
+        flashCmd = isWin()
+          ? `${eraseCmd}; if ($LASTEXITCODE -eq 0) { ${flashCmd} }`
+          : `${eraseCmd} && ${flashCmd}`;
+      }
+      const shell = idfShell(flashCmd);
+      runIdfStream(res, shell, (erase ? '擦除+烧写 ' : '烧写 ') + board, board);
     } else {
       res.writeHead(400); res.end('bad type');
     }
