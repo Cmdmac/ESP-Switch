@@ -419,8 +419,8 @@ function showFirmware(d) {
   if (d.size != null) html += `<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">程序占用 Flash：${fmtSize(d.size)}</div>`;
   html += '<div style="display:flex;flex-direction:column;gap:8px;">';
   d.files.forEach(f => {
-    const url = `/api/download?fqbn=${encodeURIComponent(d.fqbn || '')}&board=${encodeURIComponent(d.board || '')}&file=${encodeURIComponent(f.name)}`;
     const dname = prettyFw(f.name, boardNameOf(d.board, 'board'));
+    const url = `/api/download?fqbn=${encodeURIComponent(d.fqbn || '')}&board=${encodeURIComponent(d.board || '')}&file=${encodeURIComponent(dname)}`;
     html += `<div class="fw-item">
       <div class="fw-info"><div class="fw-name">${dname}</div><div class="fw-size">${fmtSize(f.size)}</div></div>
       <a href="${url}" class="dlbtn" download="${dname}">下载</a>
@@ -477,8 +477,8 @@ function showIdfFirmware(d) {
   let html = '<div style="display:flex;flex-direction:column;gap:8px;">';
   const bname = boardNameOf(d.board, 'idfboard');
   d.files.forEach(f => {
-    const url = `/api/idf/download?board=${encodeURIComponent(d.board || '')}&file=${encodeURIComponent(f.name)}`;
     const dname = prettyFw(f.name, bname);
+    const url = `/api/idf/download?board=${encodeURIComponent(d.board || '')}&file=${encodeURIComponent(dname)}`;
     html += `<div class="fw-item"><div class="fw-info"><div class="fw-name">${dname}</div><div class="fw-size">${fmtSize(f.size)}</div></div><a href="${url}" class="dlbtn" download="${dname}">下载</a></div>`;
   });
   html += '</div>';
@@ -578,10 +578,10 @@ async function loadArtifacts() {
       </div>
       <div style="display:flex;flex-direction:column;gap:8px;">`;
     g.files.forEach(f => {
-      let url;
-      if (g.type === 'idf') url = `/api/idf/download?board=${encodeURIComponent(g.board)}&file=${encodeURIComponent(f.name)}`;
-      else url = `/api/download?fqbn=${encodeURIComponent(g.fqbn)}&board=${encodeURIComponent(g.board)}&file=${encodeURIComponent(f.name)}`;
       const dname = prettyFw(f.name, g.boardName);
+      let url;
+      if (g.type === 'idf') url = `/api/idf/download?board=${encodeURIComponent(g.board)}&file=${encodeURIComponent(dname)}`;
+      else url = `/api/download?fqbn=${encodeURIComponent(g.fqbn)}&board=${encodeURIComponent(g.board)}&file=${encodeURIComponent(dname)}`;
       html += `<div class="fw-item">
         <div class="fw-info">
           <div class="art-file-name">${dname}<span class="art-file-size">${fmtSize(f.size)}</span></div>
