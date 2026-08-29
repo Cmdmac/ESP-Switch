@@ -431,59 +431,17 @@ function runStream(res, args, label, buildDir, fqbn, board) {
   });
 }
 
-// 修复 idf-c2/components/arduino 组件链接（跨平台）。
-// git 里存的是指向 macOS 绝对路径的 symlink，其它机器上目标不存在会导致
-// "Failed to resolve component 'arduino'"。构建前探测本机 arduino-cli 的
-// esp32 core（<data>/packages/esp32/hardware/esp32/<ver>）并重建链接。
-function cmpVer(a, b) {
-  const pa = String(a).split('.').map(Number);
-  const pb = String(b).split('.').map(Number);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const d = (pa[i] || 0) - (pb[i] || 0);
-    if (d) return d;
-  }
-  return 0;
-}
-
+// C2 构建前确认 arduino 依赖清单就位。
+// arduino-esp32 现在由 ESP-IDF 组件管理器从 main/idf_component.yml 拉取，
+// 安装到 managed_components/espressif__arduino-esp32；首次构建会联网下载，
+// 后续复用缓存。这里只校验清单文件存在，下载交给 idf.py 自己完成。
 function ensureArduinoComponent() {
-  const link = path.join(IDF_C2_DIR, 'components', 'arduino');
-  let coreDir = null;
-  // 链接已有效（目录且含 CMakeLists.txt，即真 arduino-esp32 core）则直接采用
-  try {
-    const st = fs.lstatSync(link);
-    const real = st.isSymbolicLink() ? fs.realpathSync(link) : link;
-    if (fs.statSync(real).isDirectory() && fs.existsSync(path.join(real, 'CMakeLists.txt'))) coreDir = real;
-  } catch (e) { /* 失效/缺失，继续重建 */ }
-
-  if (!coreDir) {
-    const dataDirs = [
-      process.env.ARDUINO_DIRECTORIES_DATA,
-      isWin() && process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Arduino15'),
-      path.join(os.homedir(), '.arduino15'),
-    ].filter(Boolean);
-    let found = null;
-    for (const dd of dataDirs) {
-      const hwRoot = path.join(dd, 'packages', 'esp32', 'hardware', 'esp32');
-      let vers = [];
-      try {
-        vers = fs.readdirSync(hwRoot).filter(v => /^\d+(\.\d+)*$/.test(v)).sort(cmpVer);
-      } catch (e) { continue; }
-      if (vers.length) { found = path.join(hwRoot, vers[vers.length - 1]); break; }
-    }
-    if (!found) {
-      return { ok: false, reason: '未找到 arduino-esp32 core，请先执行: arduino-cli core install esp32:esp32' };
-    }
-    try {
-      fs.rmSync(link, { force: true, recursive: true });
-      fs.mkdirSync(path.dirname(link), { recursive: true });
-      fs.symlinkSync(found, link, isWin() ? 'junction' : 'dir');
-      coreDir = found;
-    } catch (e) {
-      return { ok: false, reason: '重建组件链接失败: ' + e.message };
-    }
-  }
-
-  return { ok: true, real: coreDir };
+  const dep = path.join(IDF_C2_DIR, 'main', 'idf_component.yml');
+  if (fs.existsSync(dep)) return { ok: true };
+  return {
+    ok: false,
+    reason: '缺少 idf-c2/main/idf_component.yml（arduino-esp32 依赖清单）',
+  };
 }
 
 // 以 SSE 方式流式执行一条 idf.py 命令：source IDF 环境后，在 idf-c2 目录跑构建/烧录。

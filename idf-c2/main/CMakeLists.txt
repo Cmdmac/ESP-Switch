@@ -1,20 +1,22 @@
+# REQUIRES 里的 arduino 组件名 = 组件管理器安装目录名：
+# espressif/arduino-esp32 -> managed_components/espressif__arduino-esp32
 idf_component_register(
     SRCS "main.cpp"
     INCLUDE_DIRS "."
-    REQUIRES arduino esp_wifi esp_netif esp_event esp_common driver esp_hw_support
+    REQUIRES espressif__arduino-esp32 esp_wifi esp_netif esp_event esp_common driver esp_hw_support
 )
 
 # main.cpp 是薄壳：include ../../ESP32_Light_Switch/ESP32_Light_Switch.ino（唯一固件源码）。
 # arduino-cli 路径直接编译 .ino，本工程经 include 复用同一份代码，避免两份拷贝分叉。
 
-# ---- 从工程侧补齐 arduino-esp32 core 缺失的组件依赖 ----
-# arduino core（arduino-cli 安装的包）自带的 CMakeLists.txt 未声明 esp_wifi / esp_netif /
-# esp_event 等依赖，而 IDF 5.x 起这类组件不再默认加入公共依赖，必须显式声明，否则编译报
-# "WiFiType.h includes esp_wifi_types.h ... not in the requirements list of 'arduino'"。
-# 这里不改 core 的安装文件，而是在本工程内给 arduino 组件补 include 目录与链接。
+# ---- 从工程侧补齐 arduino-esp32 组件缺失的组件依赖 ----
+# arduino-esp32 自带的 CMakeLists.txt 未声明 esp_wifi / esp_netif / esp_event 等依赖，
+# 而 IDF 5.x 起这类组件不再默认加入公共依赖，必须显式声明，否则编译报
+# "WiFiType.h includes esp_wifi_types.h ... not in the requirements list"。
+# 这里不改 arduino 组件自身的文件，而是在本工程内给它补 include 目录与链接。
 # 组件列表按需扩展：把缺失的组件名同时加到上面 REQUIRES 与下面的列表即可。
 set(ARDUINO_MISSING_REQUIRES esp_wifi esp_netif esp_event esp_common driver esp_hw_support)
-idf_component_get_target(_arduino_lib arduino)
+idf_component_get_target(_arduino_lib espressif__arduino-esp32)
 if(_arduino_lib)
   foreach(_c ${ARDUINO_MISSING_REQUIRES})
     idf_component_get_target(_c_target ${_c})

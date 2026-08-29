@@ -1,0 +1,8 @@
+## ESP-IDF 组件管理器依赖清单
+## arduino-esp32 以官方组件方式引入，替代原先 symlink 到 arduino-cli 安装目录的做法：
+##   - 不再依赖本机 arduino-cli 的 core 路径（跨平台一致，Windows/Linux/macOS 通用）
+##   - 其自身依赖（mdns / libsodium / esp-modbus / littlefs 等）由 IDF 自动解析下载
+##   - 组件会被安装到 idf-c2/managed_components/espressif__arduino-esp32
+## 版本：官方说明 3.3.11 起兼容 ESP-IDF v5.5（本项目 IDF 5.5.2，满足 >=5.3,<6.2）
+dependencies:
+  espressif/arduino-esp32: "^3.3.11"
