@@ -445,20 +445,26 @@ function cmpVer(a, b) {
   return 0;
 }
 
-// 给 arduino-esp32 core 的 CMakeLists.txt 补 REQUIRES esp_wifi（幂等）。
+// 给 arduino-esp32 core 的 CMakeLists.txt 补 REQUIRES esp_wifi（幂等、自愈）。
 // WiFiType.h 依赖 esp_wifi，但部分 core 打包的 CMakeLists 未声明，导致
 // "Compilation failed because WiFiType.h includes esp_wifi_types.h ... not in
-// the requirements list of 'arduino'"。缺失时自动追加（保留续行符）。
+// the requirements list of 'arduino'"。策略：
+//   1) 清理上一版补丁造成的损坏（`REQUIRES ...) esp_wifi` 与 `PRIVREQUIRES`）
+//   2) 若 REQUIRES 缺 esp_wifi，在首个 REQUIRES 关键字后插入（词边界 \b，
+//      不会误伤 PRIV_REQUIRES；单行/多行/续行格式均安全）
 function patchArduinoCmake(coreDir) {
   const cm = path.join(coreDir, 'CMakeLists.txt');
   try {
     let txt = fs.readFileSync(cm, 'utf8');
-    if (/\besp_wifi\b/.test(txt)) return false;
-    txt = txt.replace(/(REQUIRES\s+)([^\n]*)/, (m, kw, rest) => {
-      const cont = /\\\s*$/.test(rest);            // 行尾续行符
-      const trimmed = rest.replace(/\\\s*$/, '');
-      return kw + trimmed + ' esp_wifi' + (cont ? ' \\' : '');
-    });
+    // 自愈：旧补丁把 esp_wifi 追加到 `)` 之后导致的语法错误
+    txt = txt.replace(/\)\s*esp_wifi\s*/g, ')');
+    // 自愈：旧补丁把 PRIV_REQUIRES 匹配成 REQUIRES 后可能变成 PRIVREQUIRES
+    txt = txt.replace(/PRIVREQUIRES/g, 'PRIV_REQUIRES');
+    if (/\besp_wifi\b/.test(txt)) {
+      fs.writeFileSync(cm, txt);   // 已修复/已存在，写回清理结果
+      return false;
+    }
+    txt = txt.replace(/\bREQUIRES\b/, 'REQUIRES esp_wifi');
     fs.writeFileSync(cm, txt);
     return true;
   } catch (e) { return false; }
