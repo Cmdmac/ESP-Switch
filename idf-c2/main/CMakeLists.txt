@@ -16,11 +16,11 @@ idf_component_register(
 # 这里不改 arduino 组件自身的文件，而是在本工程内给它补 include 目录与链接。
 # 组件列表按需扩展：把缺失的组件名同时加到上面 REQUIRES 与下面的列表即可。
 set(ARDUINO_MISSING_REQUIRES esp_wifi esp_netif esp_event esp_common driver esp_hw_support)
-idf_component_get_target(_arduino_lib espressif__arduino-esp32)
+idf_component_get_property(_arduino_lib espressif__arduino-esp32 COMPONENT_LIB)
 if(_arduino_lib)
   foreach(_c ${ARDUINO_MISSING_REQUIRES})
-    idf_component_get_target(_c_target ${_c})
-    if(_c_target)
+    idf_component_get_property(_c_lib ${_c} COMPONENT_LIB)
+    if(_c_lib)
       idf_component_get_property(_c_inc ${_c} INCLUDE_DIRS)
       idf_component_get_property(_c_alias ${_c} COMPONENT_ALIAS)
       target_include_directories(${_arduino_lib} PRIVATE ${_c_inc})
