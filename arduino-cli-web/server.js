@@ -41,6 +41,22 @@ const CONFIG_FILE = process.env.ESP_SWITCH_ARDUINO_CLI_YAML || path.join(os.home
 
 // ---- ESP-IDF 环境（用于编译 ESP32-C2，复用本机 IDF + arduino-esp32 作组件）----
 // IDF_DIR 解析优先级：ESP_SWITCH_IDF_DIR（显式覆盖）> 环境变量 IDF_PATH > 自动探测常见安装布局。
+// 校验候选 IDF 的工具链是否已安装匹配版本。
+// 反例：IDF 升级到 v5.5.4 但 IDF_TOOLS_PATH 下的工具仍是 v5.5.2 时代版本，
+// 导致 export 报 "tool riscv32-esp-elf has no installed versions"。
+// 用 C2 必需的 riscv32-esp-elf 是否存在于 IDF_TOOLS_PATH 判断。
+function toolsMatchForEsp32c2(idfDir) {
+  try {
+    const tps = process.env.IDF_TOOLS_PATH;
+    if (!tps) return true;
+    const j = JSON.parse(fs.readFileSync(path.join(idfDir, 'tools', 'tools.json'), 'utf8'));
+    const req = (j.tools || []).find((t) => t.name === 'riscv32-esp-elf');
+    if (!req) return true;
+    const installed = fs.readdirSync(path.join(tps, 'tools', 'riscv32-esp-elf'));
+    return (req.versions || []).some((v) => installed.includes(v.name));
+  } catch (_) { return true; } // 无法校验时放行
+}
+
 function findIdfDir() {
   if (process.env.ESP_SWITCH_IDF_DIR) return process.env.ESP_SWITCH_IDF_DIR;
   const marker = isWin() ? 'export.bat' : 'export.sh';
@@ -69,8 +85,11 @@ function findIdfDir() {
     }
   }
   if (!found.length) return null;
-  found.sort((a, b) => (b.ver[0] - a.ver[0]) || (b.ver[1] - a.ver[1]) || (b.ver[2] - a.ver[2]));
-  return found[0].dir;
+  // 先剔除工具链不匹配的候选（v5.5.4 要求 20260121 工具但本机只有 20251107）
+  const usable = found.filter((f) => toolsMatchForEsp32c2(f.dir));
+  const pool = usable.length ? usable : found;
+  pool.sort((a, b) => (b.ver[0] - a.ver[0]) || (b.ver[1] - a.ver[1]) || (b.ver[2] - a.ver[2]));
+  return pool[0].dir;
 }
 const IDF_DIR = findIdfDir() || process.env.IDF_PATH || path.join(os.homedir(), 'esp', 'esp-idf');
 // Windows 用 export.ps1（PowerShell），macOS/Linux 用 export.sh（bash）
@@ -121,8 +140,12 @@ const IDF_VENV_PY = path.join(IDF_VENV_BIN, isWin() ? 'python.exe' : 'python3');
 // 防止 node 进程继承的 PATH/残留变量导致探测到无 click 的 python（症状 "Cannot import module click"）。
 function idfShell(innerCmd) {
   if (isWin()) {
-    // 强制 UTF-8 输出：否则 PowerShell 5.1 以系统代码页(GBK)输出，SSE 按 UTF-8 解码会乱码
-    return `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; `
+    // 清除 MSYS 环境（若 server 从 Git Bash 启动，子进程会继承 MSYSTEM 与
+    // MSYS 路径，IDF 会拒绝 "MSys/Mingw is not supported"）；并强制 UTF-8 输出，
+    // 否则 Windows shell 5.1 以系统代码页(GBK)输出，SSE 按 UTF-8 解码会乱码
+    return `$env:MSYSTEM=$null; $env:MSYS=$null; `
+      + `$env:PATH=($env:PATH -split ';' | Where-Object { $_ -notmatch 'msys|mingw|PortableGit' }) -join ';'; `
+      + `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; `
       + `$env:IDF_PATH='${IDF_DIR}'; $env:IDF_PYTHON_ENV_PATH='${IDF_VENV}'; `
       + `$env:PATH='${IDF_VENV_BIN};' + $env:PATH; `
       + `& '${IDF_EXPORT}' *> $null; Set-Location '${IDF_C2_DIR}'; ${innerCmd}`;
