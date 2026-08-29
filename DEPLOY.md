@@ -5,7 +5,7 @@
 | 目标芯片 | 编译链 | 入口 |
 |---|---|---|
 | ESP32-C3 / ESP8285 / ESP8266 | arduino-cli + esp32/esp8266 core | 网页 Tab1（Arduino CLI） |
-| ESP32-C2 | **ESP-IDF 5.3.x + arduino-esp32 作组件** | 网页 Tab2（ESP32-C2） |
+| ESP32-C2 | **ESP-IDF 5.x + arduino-esp32 作组件** | 网页 Tab2（ESP32-C2） |
 
 > 为什么 C2 要特殊处理：arduino-esp32 3.x 缺少 `esp32c2-libs` 预编译包，arduino-cli/PIO 直接编 C2 会失败。把 arduino-esp32 作为 **ESP-IDF 组件**编译时，bootloader/SDK 由 IDF 生成，绕开缺失的包。
 
@@ -33,17 +33,21 @@ arduino-cli core install esp8266:esp8266      # 8285/8266 用
 
 > ⚠️ **不要**依赖 arduino-cli 编 C2 —— 3.x 缺 `esp32c2-libs`。C2 一律走下面 IDF 路径。
 
-## 3. 安装 ESP-IDF 5.3.x（Tab2 用，含 C2 工具链）
+## 3. 安装 ESP-IDF 5.x（Tab2 用，含 C2 工具链）
 
 ```bash
 # 下载源码（建议放固定路径，如 ~/esp/esp-idf）
 mkdir -p ~/esp && cd ~/esp
-git clone -b v5.3.2 --recursive https://github.com/espressif/esp-idf.git
+git clone -b v5.5.2 --recursive https://github.com/espressif/esp-idf.git
 cd esp-idf
 ./install.sh esp32c2    # 只装 C2 所需工具链（riscv32-esp-elf），也可不传参数装全量
 ```
 
-> IDF 5.3.x 都行（arduino-esp32 3.3.11 要求 IDF ∈ [5.3.0, 6.1.99]）。工具链装在 `~/.espressif/tools/`，python venv 在 `~/.espressif/python_env/idf5.3_py*_env`。
+> IDF 5.x 均可（本项目已在 5.5.2 上验证；arduino-esp32 3.3.11 要求 IDF ∈ [5.3, 6.2)）。
+> 工具链装在 `~/.espressif/tools/`，python venv 在 `~/.espressif/python_env/idf5.5_py*_env`。
+> ⚠️ **工具链版本必须与 IDF 匹配**：网页服务启动时会解析每个候选 IDF 的
+> `tools/tools.json`，若 `riscv32-esp-elf` 需求版本未安装（例如 IDF 升级到 5.5.4 但工具链还是
+> 5.5.2 时代的 `20251107`），会自动跳过该候选、选用匹配的 IDF（如 5.5.2），无需手工干预。
 
 ## 4. arduino-esp32 组件（ESP-IDF 组件管理器）
 
@@ -92,26 +96,30 @@ idf_component_get_property(_arduino_lib espressif__arduino-esp32 COMPONENT_LIB)
 
 **方式 A：设环境变量（推荐，改一行命令即可）**
 ```bash
-export ESP_SWITCH_SKETCH_DIR=<仓库>/ESP32_Light_Switch   # 固件源码 .ino
-export ESP_SWITCH_IDF_DIR=<你的>/esp-idf                 # IDF 源码路径（可选，优先级最高）
-export ESP_SWITCH_IDF_C2_DIR=<仓库>/idf-c2              # C2 IDF 工程
+export ESP_SWITCH_SKETCH_DIR=<仓库>/ESP32_Light_Switch    # 固件源码 .ino
+export ESP_SWITCH_IDF_DIR=<你的>/esp-idf                  # IDF 源码路径（可选，优先级最高）
+export ESP_SWITCH_IDF_C2_DIR=<仓库>/idf-c2               # C2 IDF 工程
+export ESP_SWITCH_BUILD_BASE=<你的>/espbuild             # arduino 编译缓存（可选，默认系统临时目录）
 node server.js
 ```
 
-> **IDF 版本选择（重要）**：`IDF_DIR` 解析优先级为 `ESP_SWITCH_IDF_DIR` > 环境变量 `IDF_PATH` > 写死默认值。
-> 也就是说：**你 `source <某版 IDF>/export.sh` 后启动 server.js，它就用那个 IDF 编译 C2** —— 无需再设任何变量。
-> 前提是版本在 arduino-esp32 3.3.11 支持范围 [5.3.0, 6.1.99] 内。venv 前缀会从该 IDF 的
+> **IDF 探测逻辑（重要）**：优先级为 `ESP_SWITCH_IDF_DIR` > 环境变量 `IDF_PATH` > 自动扫描
+> （`$IDF_TOOLS_PATH/frameworks`、`~/.espressif/<版本>/esp-idf`（eim 布局）、`~/esp`、`~/esp-idf`、`/opt`）。
+> 自动扫描会**校验工具链匹配**（见第 3 步），只挑 `riscv32-esp-elf` 需求版本已安装的 IDF，避免选中
+> "IDF 新但工具链旧"的组合。也就是说：**你 `source <某版 IDF>/export.sh` 后启动 server.js，它就用那个
+> IDF 编译 C2** —— 无需再设任何变量。
+> 前提是版本在 arduino-esp32 3.3.11 支持范围 [5.3, 6.2) 内。venv 前缀会从该 IDF 的
 > `version.cmake` 自动推导（或读环境 `IDF_PYTHON_ENV_PATH`），跨版本无需手工指定。
 
 **方式 B：直接改 server.js 顶部写死值**
 ```js
 const SKETCH_DIR = '<仓库>/ESP32_Light_Switch';
-const BUILD_BASE = '/tmp/espbuild';                 // arduino 编译产物缓存（可保持默认）
+const BUILD_BASE = '/tmp/espbuild';                 // arduino 编译产物缓存（默认系统临时目录，Windows 为 %TEMP%\espbuild）
 const IDF_DIR    = '<你的>/esp-idf';
 const IDF_C2_DIR = '<仓库>/idf-c2';
 ```
 
-> ⚠️ 若用 `IDF_PATH` 指向 IDF，请确认版本在 arduino-esp32 支持范围 [5.3.0, 6.1.99] 内；版本不符时用 `ESP_SWITCH_IDF_DIR` 显式覆盖。venv 前缀自动从该 IDF 的 `version.cmake` 推导（或读环境 `IDF_PYTHON_ENV_PATH`），一般无需手工指定；特殊情况可用 `ESP_SWITCH_IDF_VENV_PREFIX` 覆盖。
+> ⚠️ 若用 `IDF_PATH` 指向 IDF，请确认版本在 arduino-esp32 支持范围 [5.3, 6.2) 内；版本不符时用 `ESP_SWITCH_IDF_DIR` 显式覆盖。venv 前缀自动从该 IDF 的 `version.cmake` 推导（或读环境 `IDF_PYTHON_ENV_PATH`），一般无需手工指定；特殊情况可用 `ESP_SWITCH_IDF_VENV_PREFIX` 覆盖。
 
 `idf-c2/sdkconfig.defaults` 默认 4MB flash + 双 OTA 分区；若目标板 flash 不是 4MB 需改
 `CONFIG_ESPTOOLPY_FLASHSIZE_*` 与 `partitions.csv`（键名是 `FLASHSIZE`，无 `_SIZE`，写错会被静默忽略退回 2MB）。
