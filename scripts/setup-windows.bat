@@ -97,7 +97,30 @@ rem skip the core install.
 call :refresh_path
 echo.
 echo [4/5] Arduino cores (esp32 / esp8266) - optional, large download.
-set /p INSTALL_CORES="  Install cores now? [y/N]: "
+rem Detect cores already installed by Arduino IDE 2.x (%LOCALAPPDATA%\Arduino15)
+rem or by arduino-cli / Arduino IDE 1.x (%USERPROFILE%\.arduino15) so we do not
+rem re-download them.
+set "HAVE_ESP32="
+set "HAVE_ESP8266="
+for %%D in ("%LOCALAPPDATA%\Arduino15" "%USERPROFILE%\.arduino15") do (
+  if exist "%%~D\packages\esp32\hardware\esp32" set "HAVE_ESP32=1"
+  if exist "%%~D\packages\esp8266\hardware\esp8266" set "HAVE_ESP8266=1"
+)
+if defined HAVE_ESP32 (
+  echo   [OK] esp32 core already installed ^(Arduino IDE / arduino-cli^).
+) else (
+  echo   [..] esp32 core not found.
+)
+if defined HAVE_ESP8266 (
+  echo   [OK] esp8266 core already installed ^(Arduino IDE / arduino-cli^).
+) else (
+  echo   [..] esp8266 core not found.
+)
+if defined HAVE_ESP32 if defined HAVE_ESP8266 (
+  echo   [OK] All cores present, nothing to install.
+  goto :after_cores
+)
+set /p INSTALL_CORES="  Install missing cores now? [y/N]: "
 if /i "!INSTALL_CORES!"=="y" (
   where arduino-cli >nul 2>nul
   if !errorlevel!==0 (
@@ -108,26 +131,26 @@ if /i "!INSTALL_CORES!"=="y" (
     set "CLI_CMD="
   )
   if defined CLI_CMD (
-    rem skip cores that are already installed (avoid re-download)
-    "!CLI_CMD!" --config-file "%CLI_YAML%" core list > "%TEMP%\esp_core_list.txt" 2>nul
-    set "NEED_CORES="
-    findstr /i /c:"esp32:esp32 " "%TEMP%\esp_core_list.txt" >nul || set "NEED_CORES=!NEED_CORES! esp32:esp32"
-    findstr /i /c:"esp8266:esp8266" "%TEMP%\esp_core_list.txt" >nul || set "NEED_CORES=!NEED_CORES! esp8266:esp8266"
-    if defined NEED_CORES (
-      echo   Updating core index ...
-      "!CLI_CMD!" --config-file "%CLI_YAML%" core update-index
-      echo   Installing missing cores:!NEED_CORES!
-      "!CLI_CMD!" --config-file "%CLI_YAML%" core install!NEED_CORES!
-      echo   [OK] cores installed.
-    ) else (
-      echo   [OK] esp32:esp32 and esp8266:esp8266 already installed, skip.
+    echo   Updating core index ...
+    "!CLI_CMD!" --config-file "%CLI_YAML%" core update-index
+    if not defined HAVE_ESP32 (
+      echo   Installing esp32:esp32 ^(large download^) ...
+      "!CLI_CMD!" --config-file "%CLI_YAML%" core install esp32:esp32
     )
+    if not defined HAVE_ESP8266 (
+      echo   Installing esp8266:esp8266 ...
+      "!CLI_CMD!" --config-file "%CLI_YAML%" core install esp8266:esp8266
+    )
+    echo   [OK] cores installed.
   ) else (
-    echo   [SKIP] arduino-cli not available yet, skip core install.
+    echo   [SKIP] arduino-cli not available.
+    echo          Either install arduino-cli, or install the missing cores from
+    echo          Arduino IDE: Tools -^> Board -^> Boards Manager -^> search "esp32".
   )
 ) else (
   echo   [SKIP] core install skipped. Re-run with 'y' to install.
 )
+:after_cores
 
 rem ---------- 5. ESP-IDF (optional, for C2 builds) ----------
 echo.
