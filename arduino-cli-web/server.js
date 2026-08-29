@@ -418,6 +418,58 @@ function runStream(res, args, label, buildDir, fqbn, board) {
   });
 }
 
+// 修复 idf-c2/components/arduino 组件链接（跨平台）。
+// git 里存的是指向 macOS 绝对路径的 symlink，其它机器上目标不存在会导致
+// "Failed to resolve component 'arduino'"。构建前探测本机 arduino-cli 的
+// esp32 core（<data>/packages/esp32/hardware/esp32/<ver>）并重建链接。
+function cmpVer(a, b) {
+  const pa = String(a).split('.').map(Number);
+  const pb = String(b).split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d) return d;
+  }
+  return 0;
+}
+
+function ensureArduinoComponent() {
+  const link = path.join(IDF_C2_DIR, 'components', 'arduino');
+  // 已有效（目录且含 CMakeLists.txt，即真 arduino-esp32 core）则跳过
+  try {
+    const st = fs.lstatSync(link);
+    const real = st.isSymbolicLink() ? fs.realpathSync(link) : link;
+    if (fs.statSync(real).isDirectory() && fs.existsSync(path.join(real, 'CMakeLists.txt'))) {
+      return { ok: true, real };
+    }
+  } catch (e) { /* 失效/缺失，继续重建 */ }
+
+  const dataDirs = [
+    process.env.ARDUINO_DIRECTORIES_DATA,
+    isWin() && process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Arduino15'),
+    path.join(os.homedir(), '.arduino15'),
+  ].filter(Boolean);
+  let found = null;
+  for (const dd of dataDirs) {
+    const hwRoot = path.join(dd, 'packages', 'esp32', 'hardware', 'esp32');
+    let vers = [];
+    try {
+      vers = fs.readdirSync(hwRoot).filter(v => /^\d+(\.\d+)*$/.test(v)).sort(cmpVer);
+    } catch (e) { continue; }
+    if (vers.length) { found = path.join(hwRoot, vers[vers.length - 1]); break; }
+  }
+  if (!found) {
+    return { ok: false, reason: '未找到 arduino-esp32 core，请先执行: arduino-cli core install esp32:esp32' };
+  }
+  try {
+    fs.rmSync(link, { force: true, recursive: true });
+    fs.mkdirSync(path.dirname(link), { recursive: true });
+    fs.symlinkSync(found, link, isWin() ? 'junction' : 'dir');
+    return { ok: true, real: found, relinked: true };
+  } catch (e) {
+    return { ok: false, reason: '重建组件链接失败: ' + e.message };
+  }
+}
+
 // 以 SSE 方式流式执行一条 idf.py 命令：source IDF 环境后，在 idf-c2 目录跑构建/烧录。
 // IDF_C2_BOARD 通过 env 注入，供 idf-c2/main/CMakeLists.txt 选择产品板宏。
 // Windows 用 PowerShell 执行（ESP-IDF 官方仅支持 cmd/PowerShell，bash 会被 MSYS 检测拒绝），
@@ -425,6 +477,14 @@ function runStream(res, args, label, buildDir, fqbn, board) {
 function runIdfStream(res, shell, label, board) {
   sseHeaders(res);
   sseSend(res, 'start', { label, cli: 'idf.py', args: shell });
+
+  const ac = ensureArduinoComponent();
+  if (!ac.ok) {
+    sseSend(res, 'err', 'arduino 组件不可用: ' + ac.reason);
+    sseSend(res, 'done', { code: -1 });
+    try { res.end(); } catch (_) {}
+    return;
+  }
 
   const env = Object.assign({}, process.env, { IDF_C2_BOARD: board });
   let child;
