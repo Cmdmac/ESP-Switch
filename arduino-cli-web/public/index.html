@@ -649,7 +649,11 @@ document.addEventListener('click', e => {
   if (b) { flashArtifact(b); return; }
   const od = e.target.closest('.opendirbtn');
   if (od) {
-    const q = `type=${encodeURIComponent(od.dataset.type)}&board=${encodeURIComponent(od.dataset.board)}&fqbn=${encodeURIComponent(od.dataset.fqbn || '')}`;
+    // dataset 返回 HTML attribute 原文（URL 编码态），需先解码再重新编码（与 flashArtifact 一致）
+    const odType = od.dataset.type;
+    const odBoard = decodeURIComponent(od.dataset.board);
+    const odFqbn = decodeURIComponent(od.dataset.fqbn || '');
+    const q = `type=${encodeURIComponent(odType)}&board=${encodeURIComponent(odBoard)}&fqbn=${encodeURIComponent(odFqbn)}`;
     fetch('/api/open-dir?' + q).then(r => r.json()).then(d => {
       if (!d.ok) alert('打开目录失败：' + (d.reason || '未知错误'));
     }).catch(() => alert('打开目录失败：无法连接服务器'));
