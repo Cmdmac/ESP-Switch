@@ -454,14 +454,29 @@ function cmpVer(a, b) {
 //      不会误伤 PRIV_REQUIRES；单行/多行/续行格式均安全）
 function patchArduinoCmake(coreDir) {
   const cm = path.join(coreDir, 'CMakeLists.txt');
+  const bak = cm + '.esp-switch.bak';
   try {
-    let txt = fs.readFileSync(cm, 'utf8');
-    // 自愈：旧补丁把 esp_wifi 追加到 `)` 之后导致的语法错误
-    txt = txt.replace(/\)\s*esp_wifi\s*/g, ')');
-    // 自愈：旧补丁把 PRIV_REQUIRES 匹配成 REQUIRES 后可能变成 PRIVREQUIRES
+    const original = fs.readFileSync(cm, 'utf8');
+    // 首次改动前备份原始文件，供后续自愈还原
+    if (!fs.existsSync(bak)) {
+      try { fs.copyFileSync(cm, bak); } catch (e) { /* 只读也继续 */ }
+    }
+    let txt = original;
+    // 自愈1：旧补丁吞掉换行导致 `)` 与下一行命令粘连（如 `)set(`）→ 用备份还原
+    const glued = /\)\s*[A-Za-z_]\w*\s*\(/;
+    if (glued.test(txt)) {
+      try {
+        const bakTxt = fs.readFileSync(bak, 'utf8');
+        if (!glued.test(bakTxt)) txt = bakTxt;
+      } catch (e) { /* 无备份/读取失败则原样继续 */ }
+    }
+    // 自愈2：旧补丁把 esp_wifi 追加到 `)` 之后。只删 esp_wifi 本身，
+    // 千万不能吃掉其后的空白/换行——否则 `)\nset(` 会粘成 `)set(`。
+    txt = txt.replace(/\)\s*esp_wifi/g, ')');
+    // 自愈3：旧补丁把 PRIV_REQUIRES 匹配成 REQUIRES 后可能变成 PRIVREQUIRES
     txt = txt.replace(/PRIVREQUIRES/g, 'PRIV_REQUIRES');
     if (/\besp_wifi\b/.test(txt)) {
-      fs.writeFileSync(cm, txt);   // 已修复/已存在，写回清理结果
+      if (txt !== original) fs.writeFileSync(cm, txt);   // 已修复/已存在，写回清理结果
       return false;
     }
     txt = txt.replace(/\bREQUIRES\b/, 'REQUIRES esp_wifi');
