@@ -568,7 +568,7 @@ async function loadArtifacts() {
       if (g.type === 'idf') url = `/api/idf/download?board=${encodeURIComponent(g.board)}&file=${encodeURIComponent(f.name)}`;
       else url = `/api/download?fqbn=${encodeURIComponent(g.fqbn)}&board=${encodeURIComponent(g.board)}&file=${encodeURIComponent(f.name)}`;
       // 刷写按钮：按产物所属板型走正确工具（arduino: arduino-cli upload --input-dir；idf: idf.py -B flash）
-      const fdata = `data-type="${g.type}" data-fqbn="${encodeURIComponent(g.fqbn || '')}" data-board="${encodeURIComponent(g.board)}" data-name="${encodeURIComponent(f.name)}"`;
+      const fdata = `data-type="${g.type}" data-fqbn="${encodeURIComponent(g.fqbn || '')}" data-board="${encodeURIComponent(g.board)}" data-boardname="${encodeURIComponent(g.boardName)}" data-name="${encodeURIComponent(f.name)}"`;
       const dname = prettyFw(f.name, g.boardName);
       html += `<div class="fw-item">
         <div class="fw-info">
@@ -607,12 +607,14 @@ function flashArtifact(btn) {
   const type = btn.dataset.type;
   const fqbn = decodeURIComponent(btn.dataset.fqbn || '');
   const board = decodeURIComponent(btn.dataset.board);
+  const bname = decodeURIComponent(btn.dataset.boardname || board);
   const name = decodeURIComponent(btn.dataset.name || '');
+  const dname = prettyFw(name, bname);
   $('artModal').hidden = false;
   artLogEl.innerHTML = '';
   artFlashBusy = true;
   btn.disabled = true;
-  const label = '烧写 ' + name + ' → ' + board;
+  const label = '烧写 ' + dname + ' → ' + bname;
   appendArt('sys', '▶ ' + label + ' 开始…');
   $('artrunlabel').textContent = '（烧写中…）';
   const params = `type=${encodeURIComponent(type)}&fqbn=${encodeURIComponent(fqbn)}&board=${encodeURIComponent(board)}&port=${encodeURIComponent(port)}`;
