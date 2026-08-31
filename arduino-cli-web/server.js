@@ -670,6 +670,9 @@ function runStream(res, args, label, buildDir, fqbn, board, opts = {}) {
     });
     child.on('close', code => {
       code = code == null ? 0 : code;
+      // esp8266 core 3.1.2 的 upload.py 可能吞掉 esptool 错误（连接失败仍返回 0），
+      // 用输出关键字兜底判失败，避免 UI 误报"烧写成功"
+      if (code === 0 && /fatal esptool\.py error|Failed to connect to (ESP8266|ESP32|ESP32-C3|ESP32-C2)|Timed out waiting for packet header/i.test(stdoutBuf)) code = 1;
       if (buildDir && code === 0) {
         // 产物名 = sketch 名（arduino-cli 绑定），前端 prettyFw 显示为板子名
         const files = collectFirmware(buildDir);
