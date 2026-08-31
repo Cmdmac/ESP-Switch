@@ -152,7 +152,8 @@ cd arduino-cli-web && node server.js    # 打开 http://localhost:8787
 | 症状 | 原因 / 修复 |
 |---|---|
 | `Cannot import module "click"` | `export.sh` 探测到无 click 的 python（如 conda）。server.js 已显式锁定 `IDF_PYTHON_ENV_PATH` + PATH 前置 venv bin，若手动命令行复现，先 `source export.sh` 再跑 |
-| `idf.py: command not found`（C2 构建） | 多为系统 python 过新（如 Ubuntu 26.04 的 3.14，IDF 5.5 不支持）导致 venv 名不匹配。`scripts/setup-linux.sh` **只检测不安装**，会提示缺什么；需手动装兼容 python（如 `sudo apt install python3.12 python3.12-venv`）并建 venv（`cd <idf> && python3.12 tools/idf_tools.py install_python_env`）。已建好 venv 后首次构建由 server 自动识别接管 |
+| `idf.py: command not found`（C2 构建，Linux/macOS） | 多为系统 python 过新（如 Ubuntu 26.04 的 3.14，IDF 5.5 下不可用）导致 venv 名不匹配。`scripts/setup-linux.sh` **只检测不安装**，会提示缺什么；需手动装兼容 python（如 `sudo apt install python3.12 python3.12-venv`）并建 venv（`cd <idf> && python3.12 tools/idf_tools.py install_python_env`）。已建好 venv 后首次构建由 server 自动识别接管 |
+| `当前系统无兼容 python`（C2 构建，Windows） | server 找不到 IDF venv 且系统无 ≥3.9 的 python（Windows 用 `py` 启动器探测，`where python3.12` 无效）。正常应存在 `~\.espressif\python_env\idf5.5_py*_env`（官方安装器内置）；缺失则运行官方安装器修复，或已装 python 时 `py -3.12 <idf>\tools\idf_tools.py install_python_env` 重建 |
 | `Field 'type' can't be left empty` | `partitions.csv` 带 UTF-8 BOM → 用 `sed -i '1s/^\xef\xbb\xbf//' partitions.csv`（macOS 用 python 去 BOM） |
 | `does not fit in configured flash size 2MB` | `sdkconfig.defaults` 的 flash 键名写错（应为 `CONFIG_ESPTOOLPY_FLASHSIZE_4MB`），删 `sdkconfig` + `build/` 后重编 |
 | `arduino-cli: unknown shorthand flag: 'D'` | 网页服务已用 `--build-property` 注入宏，无需手动加 `-D` |
