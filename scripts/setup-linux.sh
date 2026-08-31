@@ -61,11 +61,53 @@ fetch() {
   fi
 }
 
+# 环境变量持久化：写入 ~/.bashrc 与 ~/.zshrc（若存在），并立即在当前会话生效，
+# 这样装完工具不用重开命令行。
+# 用法： persist_env 'export PATH="$HOME/bin:$PATH"'
+persist_env() {
+  local line="$1"
+  local rc
+  for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+    [ -f "$rc" ] || continue
+    grep -qF "$line" "$rc" 2>/dev/null || echo "$line" >> "$rc"
+  done
+  eval "$line"
+}
+
+# 深度探测 node：command -v 找不到时，扫描常见安装位置（nvm / brew / apt / 版本管理器）
+find_node() {
+  command -v node >/dev/null 2>&1 && return 0
+  local cand
+  # nvm 已装版本（取最新）
+  for cand in "$HOME"/.nvm/versions/node/*/bin; do
+    [ -d "$cand" ] && [ -x "$cand/node" ] || continue
+    export PATH="$cand:$PATH"
+    return 0
+  done
+  # brew / 系统路径
+  for cand in /opt/homebrew/bin /usr/local/bin /usr/bin; do
+    [ -x "$cand/node" ] || continue
+    export PATH="$cand:$PATH"
+    return 0
+  done
+  # WorkBuddy 管理运行时（桌面端自带）
+  for cand in "$HOME"/.workbuddy/binaries/node/versions/*/bin; do
+    [ -d "$cand" ] && [ -x "$cand/node" ] || continue
+    export PATH="$cand:$PATH"
+    return 0
+  done
+  # fnm / volta / asdf 等其他版本管理器
+  for cand in "$HOME"/.local/share/fnm/node-versions/*/installation/bin "$HOME"/.volta/bin "$HOME"/.asdf/shims; do
+    [ -d "$cand" ] && [ -x "$cand/node" ] && { export PATH="$cand:$PATH"; return 0; }
+  done
+  return 1
+}
+
 # ---------- 1. Node.js ----------
 echo; echo "[1/5] Node.js"
-if command -v node >/dev/null 2>&1; then
+if find_node; then
   NODE_VER=$(node --version 2>/dev/null)
-  ok "Node.js 已安装: $NODE_VER"
+  ok "Node.js 已安装: $NODE_VER  ($(command -v node))"
   NODE_MAJOR=$(echo "$NODE_VER" | sed 's/^v//' | cut -d. -f1)
   if [ "${NODE_MAJOR:-0}" -lt 14 ] 2>/dev/null; then
     warn "Node.js 版本过旧（<14），arduino-cli-web 需要 v14+，建议升级"
@@ -76,21 +118,33 @@ else
     # shellcheck disable=SC1091
     [ -s "$HOME/.nvm/nvm.sh" ] && . "$HOME/.nvm/nvm.sh"
     nvm install --lts >/dev/null 2>&1 && nvm use --lts >/dev/null 2>&1
-    command -v node >/dev/null 2>&1 && ok "Node.js 已通过 nvm 安装: $(node --version)" || fail "nvm 安装失败"
+    if find_node; then
+      ok "Node.js 已通过 nvm 安装: $(node --version)"
+      persist_env 'export NVM_DIR="$HOME/.nvm"'
+      persist_env '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"'
+    else
+      fail "nvm 安装失败"
+    fi
   elif ensure_downloader; then
     echo "    使用 nvm 官方脚本安装（推荐）..."
     fetch https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh /tmp/nvm_install.sh && bash /tmp/nvm_install.sh
     # shellcheck disable=SC1091
     [ -s "$HOME/.nvm/nvm.sh" ] && . "$HOME/.nvm/nvm.sh"
-    nvm install --lts >/dev/null 2>&1
-    if command -v node >/dev/null 2>&1; then
-      ok "Node.js 已通过 nvm 安装: $(node --version)（新终端生效）"
+    nvm install --lts >/dev/null 2>&1 && nvm use --lts >/dev/null 2>&1
+    if find_node; then
+      ok "Node.js 已通过 nvm 安装: $(node --version)（已写入 .bashrc/.zshrc，当前会话即刻生效）"
+      persist_env 'export NVM_DIR="$HOME/.nvm"'
+      persist_env '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"'
     else
-      warn "nvm 安装未生效，请新开终端后重新运行本脚本，或手动安装 https://nodejs.org"
+      fail "nvm 安装未生效，请新开终端后重新运行本脚本，或手动安装 https://nodejs.org"
     fi
   elif [ $HAVE_APT -eq 1 ]; then
     sudo apt-get update -qq && sudo apt-get install -y -qq nodejs npm
-    command -v node >/dev/null 2>&1 && ok "Node.js 已通过 apt 安装: $(node --version)（版本可能偏旧）" || fail "apt 安装失败"
+    if find_node; then
+      ok "Node.js 已通过 apt 安装: $(node --version)（版本可能偏旧）"
+    else
+      fail "apt 安装失败"
+    fi
   else
     fail "未找到安装方式，请手动安装 Node.js v14+：https://nodejs.org"
   fi
@@ -118,7 +172,7 @@ else
     fi
     if command -v arduino-cli >/dev/null 2>&1; then
       ok "arduino-cli 已安装: $(arduino-cli version | head -1)"
-      grep -q "$HOME/bin" "$HOME/.bashrc" 2>/dev/null || echo 'export PATH="$HOME/bin:$PATH"' >> "$HOME/.bashrc"
+      persist_env 'export PATH="$HOME/bin:$PATH"'
     else
       fail "安装失败，请手动安装：https://github.com/arduino/arduino-cli/releases"
     fi
@@ -160,7 +214,7 @@ elif [ -d "$HOME/.espressif/tools/riscv32-esp-elf" ]; then
   IDF_DETECTED_TMP="$HOME/.espressif"
 fi
 if [ -n "$IDF_DETECTED_TMP" ]; then
-  echo "    ℹ 检测到 ESP-IDF 环境（$IDF_DETECTED_TMP）"
+  echo "    检测到 ESP-IDF 环境: $IDF_DETECTED_TMP"
   echo "      C2 编译走 IDF，无需 arduino 的 esp32c2-libs；"
   echo "      此处仍会安装 esp32 核心包（C3 编译必需），esp8266 核心包（8285 必需）。"
 fi
@@ -177,7 +231,7 @@ if [ "$INSTALL_CORES" = "y" ] || [ "$INSTALL_CORES" = "Y" ]; then
     else
       echo "    更新核心索引 ..."
       arduino-cli --config-file "$CLI_YAML" core update-index || warn "索引更新失败（可能网络问题）"
-      echo "    安装缺失核心:$NEED（耗时较长）..."
+      echo "    安装缺失核心: $NEED (耗时较长)..."
       arduino-cli --config-file "$CLI_YAML" core install $NEED \
         && ok "核心包安装完成" || warn "核心包安装失败，可稍后手动执行: arduino-cli core install esp32:esp32 esp8266:esp8266"
     fi
@@ -193,16 +247,18 @@ echo; echo "[5/5] ESP-IDF（ESP32-C2 编译需要，可选，约 3GB）"
 
 # 收集所有有效的 ESP-IDF（目录内含 export.sh 即视为有效）
 IDF_FOUND=()
+IDF_COUNT=0
 collect_idf() {  # $1=候选目录
-  [ -n "$1" ] || return
+  [ -n "${1:-}" ] || return
   [ -d "$1" ] && [ -f "$1/export.sh" ] || return
   # 排除作为其他框架子模块的 IDF（如 ~/.espressif/esp-adf/esp-idf、esp-ai 等）
   case "$1" in
     *"/esp-adf/esp-idf"|*"/esp-ai/esp-idf"|*"/esp-rainmaker/esp-idf") return ;;
   esac
-  # 去重
-  for e in "${IDF_FOUND[@]}"; do [ "$e" = "$1" ] && return; done
+  # 去重（空数组 + set -u 需用 ${arr[@]+...} 防御展开）
+  for e in ${IDF_FOUND[@]+"${IDF_FOUND[@]}"}; do [ "$e" = "$1" ] && return; done
   IDF_FOUND+=("$1")
+  IDF_COUNT=$((IDF_COUNT+1))
 }
 
 # 优先：环境变量 IDF_PATH
@@ -221,14 +277,14 @@ if command -v idf.py >/dev/null 2>&1; then
   collect_idf "$(dirname "$(dirname "$IDF_PY_REAL")")"
 fi
 
-if [ "${#IDF_FOUND[@]}" -gt 0 ]; then
-  if [ "${#IDF_FOUND[@]}" -eq 1 ]; then
+if [ "$IDF_COUNT" -gt 0 ]; then
+  if [ "$IDF_COUNT" -eq 1 ]; then
     IDF_HOME="${IDF_FOUND[0]}"
     ok "检测到 1 个 ESP-IDF: $IDF_HOME"
   else
-    echo "    检测到 ${#IDF_FOUND[@]} 个 ESP-IDF 环境，请选择要使用的："
+    echo "    检测到 $IDF_COUNT 个 ESP-IDF 环境，请选择要使用的："
     i=1
-    for e in "${IDF_FOUND[@]}"; do
+    for e in ${IDF_FOUND[@]+"${IDF_FOUND[@]}"}; do
       ver=""
       if [ -f "$e/tools/cmake/version.cmake" ]; then
         # macOS BSD grep 无 -oP，用 grep -Eo 兼容
@@ -238,8 +294,8 @@ if [ "${#IDF_FOUND[@]}" -gt 0 ]; then
       i=$((i+1))
     done
     while :; do
-      read -r -p "    输入序号 [1-${#IDF_FOUND[@]}]: " IDF_CHOICE
-      if [ "$IDF_CHOICE" -ge 1 ] 2>/dev/null && [ "$IDF_CHOICE" -le "${#IDF_FOUND[@]}" ] 2>/dev/null; then
+      read -r -p "    输入序号 [1-$IDF_COUNT]: " IDF_CHOICE
+      if [ "$IDF_CHOICE" -ge 1 ] 2>/dev/null && [ "$IDF_CHOICE" -le "$IDF_COUNT" ] 2>/dev/null; then
         IDF_HOME="${IDF_FOUND[$((IDF_CHOICE-1))]}"
         break
       fi
@@ -254,7 +310,7 @@ if [ "${#IDF_FOUND[@]}" -gt 0 ]; then
   else
     echo "export ESP_SWITCH_IDF_DIR=\"$IDF_HOME\"" >> "$HOME/.bashrc"
   fi
-  ok "已写入环境变量 ESP_SWITCH_IDF_DIR=$IDF_HOME（已加入 ~/.bashrc，新终端也生效）"
+  ok "已写入环境变量 ESP_SWITCH_IDF_DIR=$IDF_HOME (已加入 ~/.bashrc，新终端也生效)"
 else
   warn "未检测到 ESP-IDF"
   read -r -p "    是否现在安装到 ~/esp/esp-idf（v5.5.2，支持 esp32c2）？[y/N]: " INSTALL_IDF
