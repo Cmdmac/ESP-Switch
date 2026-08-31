@@ -139,26 +139,36 @@ function scanIdfVenv(idfDir) {
     let dirs; try { dirs = fs.readdirSync(root); } catch (_) { continue; }
     const cands = dirs.filter(d => d.startsWith(prefix + '_py') && d.endsWith('_env')).sort();
     for (const d of cands) {
-      const py = path.join(root, d, 'bin', 'python3');
+      // venv 结构随平台不同：Windows 是 Scripts\python.exe，macOS/Linux 是 bin/python3
+      const bin = path.join(root, d, isWin() ? 'Scripts' : 'bin');
+      const py = path.join(bin, isWin() ? 'python.exe' : 'python3');
       if (!fs.existsSync(py)) continue;
       try {
         execFileSync(py, ['-c', 'import click'], { stdio: 'ignore' });
-        return { dir: path.join(root, d), bin: path.join(root, d, 'bin'), py };
+        return { dir: path.join(root, d), bin, py };
       } catch (_) { /* click 缺失 -> 跳过 */ }
     }
   }
   return null;
 }
 
-// 兼容 IDF 5.5 的 python：3.8~3.13（3.14 不被支持，Ubuntu26.04 自带 3.14 会卡死）。
+// 兼容 IDF 5.5 的 python：官方下限 3.9（python_version_checker.py OLDEST_PYTHON_SUPPORTED=(3,9)），
+// 无显式上限；3.14 不可用是因为依赖 cryptography<45 无 cp314 预编译 wheel（--only-binary 禁源码编译）。
 // 仅探测，不自动下载/安装（用户自行管理工具链）。
 // 扫描顺序：PATH 上的 python3.x -> uv 已管理的独立 CPython（用户自行装过的情况）。
 // 候选顺序与 scripts/setup-linux.sh 的 detect_compat_python 保持一致（3.12 优先：发行版仓库更易获得）。
+// 注意：不含 3.8 —— v5.5 的 checker 会直接拒绝 3.8（5.3/5.4 的下限才是 3.8）。
 function firstCompatiblePython() {
-  const cands = ['python3.12', 'python3.13', 'python3.11', 'python3.10', 'python3.9', 'python3.8'];
+  const cands = ['python3.12', 'python3.13', 'python3.11', 'python3.10', 'python3.9'];
+  // Windows 用 where、macOS/Linux 用 command -v（command 是 bash 内置，cmd 不认识）。
+  // stdio 第 3 位 'ignore' 吞掉子进程 stderr：cmd 找不到命令时的报错是 GBK 编码，
+  // 不吞掉会原样打进服务端控制台、按 UTF-8 显示成乱码。
+  const find = isWin()
+    ? (c) => execSync('where ' + c, { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim().split(/\r?\n/)[0]
+    : (c) => execSync('command -v ' + c, { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim().split(/\r?\n/)[0];
   for (const c of cands) {
     try {
-      const p = execSync('command -v ' + c).toString().trim().split(/\r?\n/)[0];
+      const p = find(c);
       if (p) return p;
     } catch (_) { /* not found */ }
   }
@@ -168,7 +178,7 @@ function firstCompatiblePython() {
     const dirs = fs.readdirSync(uvBase)
       .filter(d => /^cpython-3\.(1[0-3]|[89])\./.test(d)).sort();
     for (const d of dirs) {
-      const p = path.join(uvBase, d, 'bin', 'python3');
+      const p = path.join(uvBase, d, isWin() ? 'python.exe' : path.join('bin', 'python3'));
       if (fs.existsSync(p)) return p;
     }
   } catch (_) { /* uv 未用过 */ }
@@ -178,8 +188,8 @@ function firstCompatiblePython() {
 // 模块加载时的最佳猜测（仅供状态展示与启动日志；实际构建走 scanIdfVenv 动态解析）
 const IDF_VENV_INFO = scanIdfVenv(IDF_DIR);
 const IDF_VENV = IDF_VENV_INFO ? IDF_VENV_INFO.dir : '';
-const IDF_VENV_BIN = IDF_VENV_INFO ? IDF_VENV_INFO.bin : path.join(os.homedir(), '.espressif', 'python_env', 'idf5.3_py3.13_env', 'bin');
-const IDF_VENV_PY = IDF_VENV_INFO ? IDF_VENV_INFO.py : path.join(IDF_VENV_BIN, 'python3');
+const IDF_VENV_BIN = IDF_VENV_INFO ? IDF_VENV_INFO.bin : path.join(os.homedir(), '.espressif', 'python_env', 'idf5.3_py3.13_env', isWin() ? 'Scripts' : 'bin');
+const IDF_VENV_PY = IDF_VENV_INFO ? IDF_VENV_INFO.py : path.join(IDF_VENV_BIN, isWin() ? 'python.exe' : 'python3');
 
 // 统一拼一条「初始化 IDF 环境后执行命令」的 shell（按平台选 PowerShell / bash）。
 // 不 source export.sh —— 它内部会重新探测系统 python（如 Ubuntu 默认 python3.14）并按
@@ -216,7 +226,7 @@ function idfShell(innerCmd, venv) {
 let CLI = 'arduino-cli';
 try {
   const which = isWin() ? 'where arduino-cli' : 'which arduino-cli';
-  const p = execSync(which).toString().trim().split(/\r?\n/)[0];
+  const p = execSync(which, { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim().split(/\r?\n/)[0];
   if (p) CLI = p;
 } catch (e) { /* ignore */ }
 if (CLI === 'arduino-cli') {
@@ -729,7 +739,7 @@ function runIdfStream(res, innerCmd, label, board) {
   sseSend(res, 'sys', '[IDF] 未检测到 python venv，尝试自动重建（首次需联网下载 click 等依赖，约 1~2 分钟）...');
   const py = firstCompatiblePython();
   if (!py) {
-    sseSend(res, 'err', '[IDF] 当前系统无兼容 python（IDF 5.5 需 3.8~3.13，Ubuntu 26.04 自带 3.14 不受支持）。');
+    sseSend(res, 'err', '[IDF] 当前系统无兼容 python（IDF 5.5 需 python 3.9+；Ubuntu 26.04 自带 3.14 因依赖无预编译包不可用）。');
     sseSend(res, 'err', '       本服务不自动安装 python，请手动安装兼容版本后重跑构建，例如：');
     sseSend(res, 'err', '         sudo apt install python3.12 python3.12-venv');
     sseSend(res, 'err', '        建 venv： cd ' + IDF_DIR + ' && python3.12 tools/idf_tools.py install_python_env');

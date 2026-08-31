@@ -172,11 +172,13 @@ collect_idf() {  # $1=候选目录
 # ---------- 2a. 兼容 Python 与 IDF venv 检查（仅检测，不自动安装）----------
 # 重要：本脚本【不会】自动安装 python、也不会自动重建 venv。用户已自行管理工具链，
 # 这里只检测现状并给出手动修复命令，由用户决定是否执行。
-# 背景：Ubuntu 26.04 自带 python3.14，IDF 5.5 不支持，需用户手动装 3.12 并建 venv。
+# 背景：Ubuntu 26.04 自带 python3.14，IDF 5.5 下不可用（依赖 cryptography<45 无 cp314 预编译
+# wheel 且 --only-binary 禁源码编译），需用户手动装 3.9+（v5.5 官方下限）并建 venv。
+# 注意：不含 3.8 —— v5.5 的 python_version_checker.py 下限是 3.9（5.3/5.4 才是 3.8）。
 
 # 在 PATH 上探测已装兼容版本，输出 pythonX.Y 或空（3.12 优先：发行版仓库更易获得）
 detect_compat_python() {
-  for v in 3.12 3.13 3.11 3.10 3.9 3.8; do
+  for v in 3.12 3.13 3.11 3.10 3.9; do
     if command -v "python$v" >/dev/null 2>&1; then
       echo "python$v"; return 0
     fi
@@ -203,7 +205,7 @@ report_idf_python_and_venv() {
   if [ -n "$py" ]; then
     ok "检测到兼容 python: $py"
   else
-    warn "未检测到兼容 python（3.8~3.13）；Ubuntu 26.04 自带 python3.14 不被 IDF 5.5 支持"
+    warn "未检测到兼容 python（需 3.9+）；Ubuntu 26.04 自带 python3.14 在 IDF 5.5 下不可用"
     echo "    请手动安装兼容 python 后重跑本脚本（本脚本不会代你安装），例如："
     echo "      sudo apt install python3.12 python3.12-venv     （若仓库无旧版本：uv python install 3.12）"
   fi
@@ -275,7 +277,7 @@ else
     if command -v git >/dev/null 2>&1; then
       idfpy=$(detect_compat_python)
       if [ -z "$idfpy" ]; then
-        fail "缺少兼容 python(3.8~3.13)，无法安装 IDF 工具链。请先手动安装： sudo apt install python3.12 python3.12-venv"
+        fail "缺少兼容 python(需 3.9+，v5.5 官方下限)，无法安装 IDF 工具链。请先手动安装： sudo apt install python3.12 python3.12-venv"
       else
         mkdir -p "$HOME/esp" && cd "$HOME/esp"
         git clone --recursive -b v5.5.2 https://github.com/espressif/esp-idf.git esp-idf \
@@ -289,7 +291,7 @@ else
         echo "    使用前先 source ~/esp/esp-idf/export.sh"
       fi
     else
-      fail "需要 git 与 python3（>=3.8），请先安装后重试；或按官方文档安装: https://docs.espressif.com/projects/esp-idf/"
+      fail "需要 git 与 python3（>=3.9，IDF 5.5 下限；5.3/5.4 为 3.8），请先安装后重试；或按官方文档安装: https://docs.espressif.com/projects/esp-idf/"
     fi
   else
     warn "跳过 ESP-IDF。C2 编译将不可用，其余板型不受影响"

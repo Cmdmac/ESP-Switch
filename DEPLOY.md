@@ -13,7 +13,7 @@
 
 ## 1. 基础依赖
 
-- **git**、**Python 3.8+**（IDF 需要）、**Node.js 16+**（网页服务）
+- **git**、**Python 3.9+**（IDF 5.5 需要；5.3/5.4 为 3.8+）、**Node.js 16+**（网页服务）
 - macOS / Linux / Windows 均可（下文以 macOS 命令为例，Windows 用 espressif 的 PowerShell 安装器代替 `install.sh`/`export.sh`）
 
 ## 2. 安装 arduino-cli（Tab1 用）
@@ -49,11 +49,11 @@ cd esp-idf
 > `tools/tools.json`，若 `riscv32-esp-elf` 需求版本未安装（例如 IDF 升级到 5.5.4 但工具链还是
 > 5.5.2 时代的 `20251107`），会自动跳过该候选、选用匹配的 IDF（如 5.5.2），无需手工干预。
 
-> ⚠️ **Python 版本**：IDF 5.5 只支持 python **3.8~3.13**。较新的发行版（如 Ubuntu 26.04）自带
-> python3.14，直接 `./install.sh` 会找不到 `idf5.5_py3.14_env` 而失败（症状 `idf.py: command not found`）。
-> 解决：**重跑 `scripts/setup-linux.sh`** —— 它会自动探测/安装一个兼容 python（3.13/3.12…）并重建 venv，
-> 全程无需手工步骤；或手动 `sudo apt install python3.12 python3.12-venv` 后
-> `python3.12 tools/idf_tools.py install_python_env`。
+> ⚠️ **Python 版本**：IDF 5.5 官方下限是 python **3.9**（`tools/python_version_checker.py`，5.3/5.4 才是 3.8），
+> 无显式上限；但 **3.14 装不上**——依赖 `cryptography<45` 没有 cp314 预编译 wheel 且 `--only-binary` 禁止源码编译。
+> 较新的发行版（如 Ubuntu 26.04）自带 python3.14，直接 `./install.sh` 会失败（症状 `idf.py: command not found`）。
+> 解决：**重跑 `scripts/setup-linux.sh`** —— 它只检测不安装，会提示缺什么并给出手动命令；或手动
+> `sudo apt install python3.12 python3.12-venv` 后 `python3.12 tools/idf_tools.py install_python_env`。
 
 ## 4. arduino-esp32 组件（ESP-IDF 组件管理器）
 
