@@ -212,13 +212,9 @@ if [ "$IDF_COUNT" -gt 0 ]; then
     ok "已选择: $IDF_HOME"
   fi
   # 写入环境变量：让 arduino-cli-web 的 server.js 自动探测到（ESP_SWITCH_IDF_DIR 优先级最高）
-  export ESP_SWITCH_IDF_DIR="$IDF_HOME"
-  if grep -q "ESP_SWITCH_IDF_DIR" "$HOME/.bashrc" 2>/dev/null; then
-    sed -i "s|^export ESP_SWITCH_IDF_DIR=.*|export ESP_SWITCH_IDF_DIR=\"$IDF_HOME\"|" "$HOME/.bashrc"
-  else
-    echo "export ESP_SWITCH_IDF_DIR=\"$IDF_HOME\"" >> "$HOME/.bashrc"
-  fi
-  ok "已写入环境变量 ESP_SWITCH_IDF_DIR=$IDF_HOME (已加入 ~/.bashrc，新终端也生效)"
+  # 用 persist_env 同时写 .bashrc/.zshrc 并当前会话立即生效，避免重开终端
+  persist_env "export ESP_SWITCH_IDF_DIR=\"$IDF_HOME\""
+  ok "已写入环境变量 ESP_SWITCH_IDF_DIR=$IDF_HOME (已加入 ~/.bashrc 与 ~/.zshrc，当前及新终端均生效)"
 else
   warn "未检测到 ESP-IDF"
   read -r -p "    是否现在安装到 ~/esp/esp-idf（v5.5.2，支持 esp32c2）？[y/N]: " INSTALL_IDF
@@ -230,8 +226,7 @@ else
         && ./install.sh esp32c2 \
         && ok "ESP-IDF v5.5.2 安装完成（~/.espressif 工具链）"
       IDF_HOME="$HOME/esp/esp-idf"
-      export ESP_SWITCH_IDF_DIR="$IDF_HOME"
-      echo "export ESP_SWITCH_IDF_DIR=\"$IDF_HOME\"" >> "$HOME/.bashrc"
+      persist_env "export ESP_SWITCH_IDF_DIR=\"$IDF_HOME\""
       echo "    使用前先 source ~/esp/esp-idf/export.sh"
     else
       fail "需要 git 与 python3（>=3.8），请先安装后重试；或按官方文档安装: https://docs.espressif.com/projects/esp-idf/"

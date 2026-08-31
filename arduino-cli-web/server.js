@@ -148,11 +148,15 @@ function idfShell(innerCmd) {
       + `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; `
       + `$env:IDF_PATH='${IDF_DIR}'; $env:IDF_PYTHON_ENV_PATH='${IDF_VENV}'; `
       + `$env:PATH='${IDF_VENV_BIN};' + $env:PATH; `
-      + `& '${IDF_EXPORT}' *> $null; Set-Location '${IDF_C2_DIR}'; ${innerCmd}`;
+      + `if (-not (& '${IDF_EXPORT}' 2>&1)) { Write-Host "[IDF] export 执行失败: ${IDF_EXPORT}"; exit 9 }; `
+      + `if (-not (Get-Command idf.py -ErrorAction SilentlyContinue)) { Write-Host "[IDF] source 后仍未找到 idf.py，检查 IDF_PATH=${IDF_DIR}"; exit 9 }; `
+      + `Set-Location '${IDF_C2_DIR}'; ${innerCmd}`;
   }
   return `export IDF_PATH="${IDF_DIR}"; export IDF_PYTHON_ENV_PATH="${IDF_VENV}"; `
     + `export PATH="${IDF_VENV_BIN}:$PATH"; `
-    + `source "${IDF_EXPORT}" >/dev/null 2>&1; cd "${IDF_C2_DIR}" && ${innerCmd}`;
+    + `if ! source "${IDF_EXPORT}" >/dev/null 2>&1; then echo "[IDF] export.sh 执行失败: ${IDF_EXPORT}"; echo "[IDF] 请检查 IDF 环境（可运行: bash ${IDF_EXPORT} 查看报错）"; exit 9; fi; `
+    + `command -v idf.py >/dev/null 2>&1 || { echo "[IDF] source 后仍未找到 idf.py，检查 IDF_PATH=${IDF_DIR} 与 venv=${IDF_VENV}"; echo "[IDF] 可手动验证: source ${IDF_EXPORT} && idf.py --version"; exit 9; }; `
+    + `cd "${IDF_C2_DIR}" && ${innerCmd}`;
 }
 
 // ---- 解析 arduino-cli 路径：PATH -> 平台常见安装位置 ----
