@@ -175,9 +175,9 @@ collect_idf() {  # $1=候选目录
 # 这里：先找 PATH 上已装的兼容 python；找不到就用包管理器装一个；最后用该 python
 # 跑 idf_tools.py install_python_env 建/修 venv。做到「全自动」，无需手动步骤。
 
-# 在 PATH 上探测已装兼容版本，输出 pythonX.Y 或空
+# 在 PATH 上探测已装兼容版本，输出 pythonX.Y 或空（3.12 优先：发行版仓库更易获得）
 detect_compat_python() {
-  for v in 3.13 3.12 3.11 3.10 3.9 3.8; do
+  for v in 3.12 3.13 3.11 3.10 3.9 3.8; do
     if command -v "python$v" >/dev/null 2>&1; then
       echo "python$v"; return 0
     fi
@@ -189,27 +189,43 @@ detect_compat_python() {
 install_compat_python() {
   if ! ensure_sudo; then fail "需要 sudo 权限安装兼容 python（3.8~3.13）"; return 1; fi
   if [ $HAVE_APT -eq 1 ]; then
-    for v in 3.13 3.12 3.11 3.10; do
+    for v in 3.12 3.13 3.11 3.10; do
       warn "尝试安装 python$v (apt) ..."
       if $SUDO apt-get update -qq 2>/dev/null \
          && $SUDO apt-get install -y -qq "python$v" "python$v-venv"; then
-        if command -v "python$v" >/dev/null 2>&1; then ok "已安装 $v"; echo "python$v"; return 0; fi
+        if command -v "python$v" >/dev/null 2>&1; then ok "已安装 python$v"; echo "python$v"; return 0; fi
       fi
     done
   elif [ $HAVE_DNF -eq 1 ]; then
-    for v in 3.13 3.12 3.11 3.10; do
+    for v in 3.12 3.13 3.11 3.10; do
       warn "尝试安装 python$v (dnf) ..."
       if $SUDO dnf install -y "python$v"; then
         command -v "python$v" >/dev/null 2>&1 && { echo "python$v"; return 0; }
       fi
     done
   elif [ $HAVE_BREW -eq 1 ]; then
-    for v in 3.13 3.12 3.11; do
+    for v in 3.12 3.13 3.11; do
       warn "尝试安装 python$v (brew) ..."
       if brew install "python@$v" 2>/dev/null && command -v "python$v" >/dev/null 2>&1; then
         echo "python$v"; return 0
       fi
     done
+  fi
+  # 最后手段：用 uv 下载预编译 CPython（不依赖发行版仓库是否有旧版本，
+  # 专为 Ubuntu 26.04 等系统 python 只有 3.14 的场景）
+  warn "apt/dnf/brew 均未提供兼容 python，改用 uv 下载预编译 CPython 3.12 ..."
+  if ! ensure_downloader; then fail "缺少 curl/wget，无法下载 uv"; return 1; fi
+  local UV="$HOME/.local/bin/uv"
+  if ! command -v uv >/dev/null 2>&1 && [ ! -x "$UV" ]; then
+    fetch https://astral.sh/uv/install.sh /tmp/uv_install.sh && sh /tmp/uv_install.sh >/dev/null 2>&1
+  fi
+  command -v uv >/dev/null 2>&1 || export PATH="$HOME/.local/bin:$PATH"
+  if command -v uv >/dev/null 2>&1; then
+    if uv python install 3.12 >/dev/null 2>&1; then
+      local UVPY
+      UVPY=$(ls -d "$HOME"/.local/share/uv/python/cpython-3.12.*/bin/python3.12 2>/dev/null | head -1)
+      if [ -n "$UVPY" ] && [ -x "$UVPY" ]; then ok "已通过 uv 安装 CPython 3.12: $UVPY"; echo "$UVPY"; return 0; fi
+    fi
   fi
   return 1
 }
