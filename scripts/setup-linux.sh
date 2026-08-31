@@ -149,6 +149,21 @@ fi
 
 # ---------- 4. 可选：安装核心包（大下载） ----------
 echo; echo "[4/5] Arduino 核心包 (esp32 / esp8266，可选，约 1GB+ 下载)"
+# 若 IDF 已就绪（上面的 [5/5] 是倒序？不，这里按脚本原顺序执行），提示复用：
+# 本脚本顺序为 1..5，IDF 检测在 [5/5]，故在此先做一次轻量探测用于提示。
+IDF_DETECTED_TMP=""
+if [ -n "${ESP_SWITCH_IDF_DIR:-}" ] && [ -f "$ESP_SWITCH_IDF_DIR/export.sh" ]; then
+  IDF_DETECTED_TMP="$ESP_SWITCH_IDF_DIR"
+elif [ -n "${IDF_PATH:-}" ] && [ -f "$IDF_PATH/export.sh" ]; then
+  IDF_DETECTED_TMP="$IDF_PATH"
+elif [ -d "$HOME/.espressif/tools/riscv32-esp-elf" ]; then
+  IDF_DETECTED_TMP="$HOME/.espressif"
+fi
+if [ -n "$IDF_DETECTED_TMP" ]; then
+  echo "    ℹ 检测到 ESP-IDF 环境（$IDF_DETECTED_TMP）"
+  echo "      C2 编译走 IDF，无需 arduino 的 esp32c2-libs；"
+  echo "      此处仍会安装 esp32 核心包（C3 编译必需），esp8266 核心包（8285 必需）。"
+fi
 read -r -p "    现在安装核心包？[y/N]: " INSTALL_CORES
 if [ "$INSTALL_CORES" = "y" ] || [ "$INSTALL_CORES" = "Y" ]; then
   if command -v arduino-cli >/dev/null 2>&1; then
@@ -173,24 +188,73 @@ else
   warn "跳过核心包安装。之后可重跑本脚本选择 y，或手动执行 arduino-cli core install"
 fi
 
-# ---------- 5. 可选：ESP-IDF（C2 编译需要，约 3GB） ----------
+# ---------- 5. ESP-IDF（C2 编译需要）：扫描已有环境 -> 多选 -> 写入环境变量 ----------
 echo; echo "[5/5] ESP-IDF（ESP32-C2 编译需要，可选，约 3GB）"
-IDF_HOME=""
-if [ -n "${IDF_PATH:-}" ] && [ -f "$IDF_PATH/export.sh" ]; then
-  IDF_HOME="$IDF_PATH"
-elif [ -d "$HOME/esp/esp-idf" ] && [ -f "$HOME/esp/esp-idf/export.sh" ]; then
-  IDF_HOME="$HOME/esp/esp-idf"
-elif [ -d "/opt/esp-idf" ] && [ -f "/opt/esp-idf/export.sh" ]; then
-  IDF_HOME="/opt/esp-idf"
-else
-  # eim（ESP-IDF Installation Manager）布局：~/.espressif/<版本>/esp-idf
-  for cand in "$HOME"/.espressif/*/esp-idf; do
-    if [ -f "$cand/export.sh" ]; then IDF_HOME="$cand"; fi
-  done
+
+# 收集所有有效的 ESP-IDF（目录内含 export.sh 即视为有效）
+IDF_FOUND=()
+collect_idf() {  # $1=候选目录
+  [ -n "$1" ] || return
+  [ -d "$1" ] && [ -f "$1/export.sh" ] || return
+  # 排除作为其他框架子模块的 IDF（如 ~/.espressif/esp-adf/esp-idf、esp-ai 等）
+  case "$1" in
+    *"/esp-adf/esp-idf"|*"/esp-ai/esp-idf"|*"/esp-rainmaker/esp-idf") return ;;
+  esac
+  # 去重
+  for e in "${IDF_FOUND[@]}"; do [ "$e" = "$1" ] && return; done
+  IDF_FOUND+=("$1")
+}
+
+# 优先：环境变量 IDF_PATH
+collect_idf "${IDF_PATH:-}"
+# 常见布局：~/esp/esp-idf、~/esp/<版本>/esp-idf、/opt/esp-idf
+for cand in "$HOME"/esp/esp-idf "$HOME"/esp/*/esp-idf /opt/esp-idf; do
+  collect_idf "$cand"
+done
+# eim / 官方安装器布局：~/.espressif/<版本>/esp-idf（Linux 与 macOS 一致）
+for cand in "$HOME"/.espressif/*/esp-idf "$HOME"/.espressif/esp-idf; do
+  collect_idf "$cand"
+done
+# 当前 shell 已 source 过 IDF（idf.py 在 PATH 且能定位到 export.sh）
+if command -v idf.py >/dev/null 2>&1; then
+  IDF_PY_REAL=$(readlink -f "$(command -v idf.py)" 2>/dev/null || echo "$(command -v idf.py)")
+  collect_idf "$(dirname "$(dirname "$IDF_PY_REAL")")"
 fi
-if [ -n "$IDF_HOME" ]; then
-  ok "ESP-IDF 已安装: $IDF_HOME"
-  echo "    提示：编译 C2 时设置 export IDF_PATH=$IDF_HOME 即可被自动探测"
+
+if [ "${#IDF_FOUND[@]}" -gt 0 ]; then
+  if [ "${#IDF_FOUND[@]}" -eq 1 ]; then
+    IDF_HOME="${IDF_FOUND[0]}"
+    ok "检测到 1 个 ESP-IDF: $IDF_HOME"
+  else
+    echo "    检测到 ${#IDF_FOUND[@]} 个 ESP-IDF 环境，请选择要使用的："
+    i=1
+    for e in "${IDF_FOUND[@]}"; do
+      ver=""
+      if [ -f "$e/tools/cmake/version.cmake" ]; then
+        # macOS BSD grep 无 -oP，用 grep -Eo 兼容
+        ver=$(grep -Eo 'set\(IDF_VERSION_(MAJOR|MINOR|PATCH) +[0-9]+\)' "$e/tools/cmake/version.cmake" 2>/dev/null | grep -Eo '[0-9]+' | paste -sd. -)
+      fi
+      echo "      [$i] $e${ver:+  (v$ver)}"
+      i=$((i+1))
+    done
+    while :; do
+      read -r -p "    输入序号 [1-${#IDF_FOUND[@]}]: " IDF_CHOICE
+      if [ "$IDF_CHOICE" -ge 1 ] 2>/dev/null && [ "$IDF_CHOICE" -le "${#IDF_FOUND[@]}" ] 2>/dev/null; then
+        IDF_HOME="${IDF_FOUND[$((IDF_CHOICE-1))]}"
+        break
+      fi
+      echo "    无效序号，请重新输入"
+    done
+    ok "已选择: $IDF_HOME"
+  fi
+  # 写入环境变量：让 arduino-cli-web 的 server.js 自动探测到（ESP_SWITCH_IDF_DIR 优先级最高）
+  export ESP_SWITCH_IDF_DIR="$IDF_HOME"
+  if grep -q "ESP_SWITCH_IDF_DIR" "$HOME/.bashrc" 2>/dev/null; then
+    sed -i "s|^export ESP_SWITCH_IDF_DIR=.*|export ESP_SWITCH_IDF_DIR=\"$IDF_HOME\"|" "$HOME/.bashrc"
+  else
+    echo "export ESP_SWITCH_IDF_DIR=\"$IDF_HOME\"" >> "$HOME/.bashrc"
+  fi
+  ok "已写入环境变量 ESP_SWITCH_IDF_DIR=$IDF_HOME（已加入 ~/.bashrc，新终端也生效）"
 else
   warn "未检测到 ESP-IDF"
   read -r -p "    是否现在安装到 ~/esp/esp-idf（v5.5.2，支持 esp32c2）？[y/N]: " INSTALL_IDF
@@ -201,6 +265,9 @@ else
         && cd esp-idf \
         && ./install.sh esp32c2 \
         && ok "ESP-IDF v5.5.2 安装完成（~/.espressif 工具链）"
+      IDF_HOME="$HOME/esp/esp-idf"
+      export ESP_SWITCH_IDF_DIR="$IDF_HOME"
+      echo "export ESP_SWITCH_IDF_DIR=\"$IDF_HOME\"" >> "$HOME/.bashrc"
       echo "    使用前先 source ~/esp/esp-idf/export.sh"
     else
       fail "需要 git 与 python3（>=3.8），请先安装后重试；或按官方文档安装: https://docs.espressif.com/projects/esp-idf/"
@@ -228,6 +295,7 @@ echo "=============================================="
 node --version      >/dev/null 2>&1 && echo "  node        : $(node --version)"       || echo "  node        : 缺失"
 arduino-cli version >/dev/null 2>&1 && echo "  arduino-cli : $(arduino-cli version | head -1)" || echo "  arduino-cli : 缺失（C3/8285 编译不可用）"
 [ -n "${IDF_HOME:-}" ] && echo "  esp-idf     : $IDF_HOME" || echo "  esp-idf     : 未安装（C2 编译不可用）"
+[ -n "${ESP_SWITCH_IDF_DIR:-}" ] && echo "  环境变量    : ESP_SWITCH_IDF_DIR=$ESP_SWITCH_IDF_DIR" || echo "  环境变量    : ESP_SWITCH_IDF_DIR 未设置（server.js 将回退自动探测）"
 [ -f "$CLI_YAML" ] && echo "  config      : $CLI_YAML" || echo "  config      : 缺失"
 echo
 echo " 启动网页控制台："
