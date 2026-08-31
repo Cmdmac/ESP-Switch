@@ -151,7 +151,8 @@ function scanIdfVenv(idfDir) {
 }
 
 // 兼容 IDF 5.5 的 python：3.8~3.13（3.14 不被支持，Ubuntu26.04 自带 3.14 会卡死）。
-// 扫描顺序：PATH 上的 python3.x -> uv 管理的独立 CPython -> uv 现场拉一个 3.12（需联网）。
+// 仅探测，不自动下载/安装（用户自行管理工具链）。
+// 扫描顺序：PATH 上的 python3.x -> uv 已管理的独立 CPython（用户自行装过的情况）。
 function firstCompatiblePython() {
   const cands = ['python3.13', 'python3.12', 'python3.11', 'python3.10', 'python3.9', 'python3.8'];
   for (const c of cands) {
@@ -160,7 +161,7 @@ function firstCompatiblePython() {
       if (p) return p;
     } catch (_) { /* not found */ }
   }
-  // uv 管理的独立 CPython（Ubuntu26.04 系统只有 3.14 时的关键退路）
+  // uv 已下载管理的独立 CPython（用户自行通过 uv 安装的情况）
   const uvBase = path.join(os.homedir(), '.local', 'share', 'uv', 'python');
   try {
     const dirs = fs.readdirSync(uvBase)
@@ -170,44 +171,7 @@ function firstCompatiblePython() {
       if (fs.existsSync(p)) return p;
     }
   } catch (_) { /* uv 未用过 */ }
-  // uv 可用但未装 python -> 现场拉一个 3.12（一次性，需联网）
-  try {
-    if (execSync('command -v uv').toString().trim()) {
-      execSync('uv python install 3.12', { stdio: 'ignore', timeout: 5 * 60 * 1000 });
-      const dirs = fs.readdirSync(uvBase).filter(d => d.startsWith('cpython-3.12.')).sort();
-      if (dirs.length) {
-        const p = path.join(uvBase, dirs[0], 'bin', 'python3');
-        if (fs.existsSync(p)) return p;
-      }
-    }
-  } catch (_) { /* uv 拉取失败 */ }
   return null;
-}
-
-// 用兼容 python 跑 idf_tools.py install_python_env，自动建出 venv。
-// 返回 { dir, bin, py } 或 null（失败：无兼容 python / 网络 / 权限）。
-function createIdfVenv(idfDir) {
-  const py = firstCompatiblePython();
-  if (!py) return null;
-  // 清理可能残留的无效 venv 目录（如 Ubuntu 用系统 3.14 残留的 idf5.5_py3.14_env），
-  // 否则 install_python_env 可能拒绝重建或复用坏环境。
-  const prefix = idfPrefix(idfDir);
-  const penv = path.join(os.homedir(), '.espressif', 'python_env');
-  try {
-    for (const d of fs.readdirSync(penv)) {
-      if (d.startsWith(prefix + '_py') && d.endsWith('_env')) {
-        const p = path.join(penv, d);
-        if (!fs.existsSync(path.join(p, 'bin', 'python3'))) {
-          try { fs.rmSync(p, { recursive: true, force: true }); } catch (_) {}
-        }
-      }
-    }
-  } catch (_) { /* ignore */ }
-  try {
-    execFileSync(py, [path.join(idfDir, 'tools', 'idf_tools.py'), 'install_python_env'],
-      { stdio: 'ignore', timeout: 10 * 60 * 1000 });
-  } catch (_) { return null; }
-  return scanIdfVenv(idfDir);
 }
 
 // 模块加载时的最佳猜测（仅供状态展示与启动日志；实际构建走 scanIdfVenv 动态解析）
@@ -764,10 +728,10 @@ function runIdfStream(res, innerCmd, label, board) {
   sseSend(res, 'sys', '[IDF] 未检测到 python venv，尝试自动重建（首次需联网下载 click 等依赖，约 1~2 分钟）...');
   const py = firstCompatiblePython();
   if (!py) {
-    sseSend(res, 'err', '[IDF] 当前系统 python 不被 IDF 5.5 支持（需 3.8~3.13）。Ubuntu 26.04 自带 python3.14 无法创建 venv。');
-    sseSend(res, 'err', '       请运行环境搭建脚本一键修复（会自动装兼容 python 并建 venv，无需手工步骤）：');
-    sseSend(res, 'err', '         bash scripts/setup-linux.sh');
-    sseSend(res, 'err', '       若已装 uv，也可手动： uv python install 3.12 && uv python find 3.12');
+    sseSend(res, 'err', '[IDF] 当前系统无兼容 python（IDF 5.5 需 3.8~3.13，Ubuntu 26.04 自带 3.14 不受支持）。');
+    sseSend(res, 'err', '       本服务不自动安装 python，请手动安装兼容版本后重跑构建，例如：');
+    sseSend(res, 'err', '         sudo apt install python3.12 python3.12-venv');
+    sseSend(res, 'err', '        建 venv： cd ' + IDF_DIR + ' && python3.12 tools/idf_tools.py install_python_env');
     sseSend(res, 'done', { code: -1 });
     try { res.end(); } catch (_) {}
     return;

@@ -169,11 +169,10 @@ collect_idf() {  # $1=候选目录
   IDF_COUNT=$((IDF_COUNT+1))
 }
 
-# ---------- 2a. 兼容的 Python 与 IDF venv（关键：Ubuntu 26.04 自带 python3.14，IDF 5.5 不支持）----------
-# IDF 5.5 需要 python 3.8~3.13；系统 python 过新（3.14）会被拒绝，导致 venv 名与系统
-# python 不匹配（如 idf5.5_py3.14_env 不存在），症状就是 idf.py: command not found。
-# 这里：先找 PATH 上已装的兼容 python；找不到就用包管理器装一个；最后用该 python
-# 跑 idf_tools.py install_python_env 建/修 venv。做到「全自动」，无需手动步骤。
+# ---------- 2a. 兼容 Python 与 IDF venv 检查（仅检测，不自动安装）----------
+# 重要：本脚本【不会】自动安装 python、也不会自动重建 venv。用户已自行管理工具链，
+# 这里只检测现状并给出手动修复命令，由用户决定是否执行。
+# 背景：Ubuntu 26.04 自带 python3.14，IDF 5.5 不支持，需用户手动装 3.12 并建 venv。
 
 # 在 PATH 上探测已装兼容版本，输出 pythonX.Y 或空（3.12 优先：发行版仓库更易获得）
 detect_compat_python() {
@@ -185,77 +184,39 @@ detect_compat_python() {
   return 1
 }
 
-# 用包管理器装一个兼容 python，成功输出 pythonX.Y，失败返回 1
-install_compat_python() {
-  if ! ensure_sudo; then fail "需要 sudo 权限安装兼容 python（3.8~3.13）"; return 1; fi
-  if [ $HAVE_APT -eq 1 ]; then
-    for v in 3.12 3.13 3.11 3.10; do
-      warn "尝试安装 python$v (apt) ..."
-      if $SUDO apt-get update -qq 2>/dev/null \
-         && $SUDO apt-get install -y -qq "python$v" "python$v-venv"; then
-        if command -v "python$v" >/dev/null 2>&1; then ok "已安装 python$v"; echo "python$v"; return 0; fi
-      fi
-    done
-  elif [ $HAVE_DNF -eq 1 ]; then
-    for v in 3.12 3.13 3.11 3.10; do
-      warn "尝试安装 python$v (dnf) ..."
-      if $SUDO dnf install -y "python$v"; then
-        command -v "python$v" >/dev/null 2>&1 && { echo "python$v"; return 0; }
-      fi
-    done
-  elif [ $HAVE_BREW -eq 1 ]; then
-    for v in 3.12 3.13 3.11; do
-      warn "尝试安装 python$v (brew) ..."
-      if brew install "python@$v" 2>/dev/null && command -v "python$v" >/dev/null 2>&1; then
-        echo "python$v"; return 0
-      fi
-    done
-  fi
-  # 最后手段：用 uv 下载预编译 CPython（不依赖发行版仓库是否有旧版本，
-  # 专为 Ubuntu 26.04 等系统 python 只有 3.14 的场景）
-  warn "apt/dnf/brew 均未提供兼容 python，改用 uv 下载预编译 CPython 3.12 ..."
-  if ! ensure_downloader; then fail "缺少 curl/wget，无法下载 uv"; return 1; fi
-  local UV="$HOME/.local/bin/uv"
-  if ! command -v uv >/dev/null 2>&1 && [ ! -x "$UV" ]; then
-    fetch https://astral.sh/uv/install.sh /tmp/uv_install.sh && sh /tmp/uv_install.sh >/dev/null 2>&1
-  fi
-  command -v uv >/dev/null 2>&1 || export PATH="$HOME/.local/bin:$PATH"
-  if command -v uv >/dev/null 2>&1; then
-    if uv python install 3.12 >/dev/null 2>&1; then
-      local UVPY
-      UVPY=$(ls -d "$HOME"/.local/share/uv/python/cpython-3.12.*/bin/python3.12 2>/dev/null | head -1)
-      if [ -n "$UVPY" ] && [ -x "$UVPY" ]; then ok "已通过 uv 安装 CPython 3.12: $UVPY"; echo "$UVPY"; return 0; fi
-    fi
-  fi
+# 检测 IDF venv 是否已就绪（存在一个能 import click 的 python3），输出 venv 目录或空
+check_idf_venv() {
+  local penv="$HOME/.espressif/python_env" d
+  [ -d "$penv" ] || return 1
+  for d in "$penv"/*; do
+    [ -x "$d/bin/python3" ] || continue
+    if "$d/bin/python3" -c "import click" >/dev/null 2>&1; then echo "$d"; return 0; fi
+  done
   return 1
 }
 
-# 确保 IDF 的 python venv 就绪：缺失/失效则自动重建（需联网）
-ensure_idf_python_and_venv() {
+# 仅检测并报告 IDF python 环境，不自动安装/重建（用户自行管理工具链）。
+report_idf_python_and_venv() {
   [ -n "${1:-}" ] || return 0
-  local py; py=$(detect_compat_python) || py=$(install_compat_python) || {
-    fail "未找到亦无法安装兼容 python(3.8~3.13)。Ubuntu 26.04 自带 3.14 不被 IDF 5.5 支持。"
-    fail "请手动安装： sudo apt install python3.12 python3.12-venv  然后重跑本脚本"
-    return 1; }
-
-  # 校验 venv 是否已就绪（存在一个能 import click 的 python3）
-  local penv="$HOME/.espressif/python_env" ready=0 d
-  if [ -d "$penv" ]; then
-    for d in "$penv"/*; do
-      [ -x "$d/bin/python3" ] || continue
-      if "$d/bin/python3" -c "import click" >/dev/null 2>&1; then ready=1; break; fi
-    done
-  fi
-  if [ "$ready" -eq 1 ]; then
-    ok "IDF python venv 已就绪 ($(basename "$d"))"
-    return 0
-  fi
-
-  warn "IDF python venv 缺失/失效，用 $py 自动重建（需联网，约 1~2 分钟）..."
-  if "$py" "$1/tools/idf_tools.py" install_python_env; then
-    ok "IDF python venv 已重建 ($(basename "$d"))"
+  local py venv
+  py=$(detect_compat_python)
+  if [ -n "$py" ]; then
+    ok "检测到兼容 python: $py"
   else
-    fail "venv 重建失败（检查网络/权限）。可手动： cd $1 && $py tools/idf_tools.py install_python_env"
+    warn "未检测到兼容 python（3.8~3.13）；Ubuntu 26.04 自带 python3.14 不被 IDF 5.5 支持"
+    echo "    请手动安装兼容 python 后重跑本脚本（本脚本不会代你安装），例如："
+    echo "      sudo apt install python3.12 python3.12-venv     （若仓库无旧版本：uv python install 3.12）"
+  fi
+  venv=$(check_idf_venv)
+  if [ -n "$venv" ]; then
+    ok "IDF python venv 已就绪 ($(basename "$venv"))"
+  else
+    warn "IDF python venv 未就绪（缺失或 click 不可用）"
+    if [ -n "$py" ]; then
+      echo "    可用现有 $py 手动建 venv： cd $1 && $py tools/idf_tools.py install_python_env"
+    else
+      echo "    请先安装兼容 python，再执行： cd $1 && python3.12 tools/idf_tools.py install_python_env"
+    fi
   fi
 }
 
@@ -305,25 +266,28 @@ if [ "$IDF_COUNT" -gt 0 ]; then
   # 用 persist_env 同时写 .bashrc/.zshrc 并当前会话立即生效，避免重开终端
   persist_env "export ESP_SWITCH_IDF_DIR=\"$IDF_HOME\""
   ok "已写入环境变量 ESP_SWITCH_IDF_DIR=$IDF_HOME (已加入 ~/.bashrc 与 ~/.zshrc，当前及新终端均生效)"
-  # 确保 IDF 的 python venv 就绪（Ubuntu 26.04 的 python3.14 不被支持时自动换兼容版本并重建）
-  ensure_idf_python_and_venv "$IDF_HOME"
+  # 检查 IDF 的 python 环境（仅检测，不自动安装/重建 venv）
+  report_idf_python_and_venv "$IDF_HOME"
 else
   warn "未检测到 ESP-IDF"
   read -r -p "    是否现在安装到 ~/esp/esp-idf（v5.5.2，支持 esp32c2）？[y/N]: " INSTALL_IDF
   if [ "$INSTALL_IDF" = "y" ] || [ "$INSTALL_IDF" = "Y" ]; then
     if command -v git >/dev/null 2>&1; then
-      mkdir -p "$HOME/esp" && cd "$HOME/esp"
-      git clone --recursive -b v5.5.2 https://github.com/espressif/esp-idf.git esp-idf \
-        && cd esp-idf \
-        && { idfpy=$(detect_compat_python) || idfpy=$(install_compat_python) || idfpy=python3; \
-             echo "    使用 $idfpy 安装工具链..."; \
-             "$idfpy" tools/idf_tools.py install esp32c2; } \
-        && ok "ESP-IDF v5.5.2 工具链安装完成（~/.espressif）"
-      IDF_HOME="$HOME/esp/esp-idf"
-      persist_env "export ESP_SWITCH_IDF_DIR=\"$IDF_HOME\""
-      # 建/修 python venv（关键：避开系统 python3.14）
-      ensure_idf_python_and_venv "$IDF_HOME"
-      echo "    使用前先 source ~/esp/esp-idf/export.sh"
+      idfpy=$(detect_compat_python)
+      if [ -z "$idfpy" ]; then
+        fail "缺少兼容 python(3.8~3.13)，无法安装 IDF 工具链。请先手动安装： sudo apt install python3.12 python3.12-venv"
+      else
+        mkdir -p "$HOME/esp" && cd "$HOME/esp"
+        git clone --recursive -b v5.5.2 https://github.com/espressif/esp-idf.git esp-idf \
+          && cd esp-idf \
+          && { echo "    使用 $idfpy 安装工具链..."; "$idfpy" tools/idf_tools.py install esp32c2; } \
+          && ok "ESP-IDF v5.5.2 工具链安装完成（~/.espressif）"
+        IDF_HOME="$HOME/esp/esp-idf"
+        persist_env "export ESP_SWITCH_IDF_DIR=\"$IDF_HOME\""
+        # 检查 python 环境（仅检测，不自动安装/重建 venv）
+        report_idf_python_and_venv "$IDF_HOME"
+        echo "    使用前先 source ~/esp/esp-idf/export.sh"
+      fi
     else
       fail "需要 git 与 python3（>=3.8），请先安装后重试；或按官方文档安装: https://docs.espressif.com/projects/esp-idf/"
     fi
