@@ -145,8 +145,10 @@ const IDF_VENV_BIN = firstExisting([path.join(IDF_VENV, 'Scripts'), path.join(ID
 const IDF_VENV_PY = path.join(IDF_VENV_BIN, isWin() ? 'python.exe' : 'python3');
 
 // 统一拼一条「初始化 IDF 环境后执行命令」的 shell（按平台选 PowerShell / bash）。
-// 显式锁定 IDF_PATH + IDF_PYTHON_ENV_PATH + venv bin 前置，再 source export：
-// 防止 node 进程继承的 PATH/残留变量导致探测到无 click 的 python（症状 "Cannot import module click"）。
+// 不 source export.sh —— 它内部会重新探测系统 python（如 Ubuntu 默认 python3.14）并按
+// 该版本找 venv（idfX.Y_py<系统版本>_env），系统 python 过新/过旧会直接失败。
+// 改为：直接用 server 已校验有效的 venv python 执行 idf_tools.py export，eval 其输出。
+// 这样 IDF 环境完全由 IDF_VENV（校验过 click）决定，系统 python 版本无关。
 function idfShell(innerCmd) {
   if (isWin()) {
     // 清除 MSYS 环境（若 server 从 Git Bash 启动，子进程会继承 MSYSTEM 与
@@ -156,15 +158,19 @@ function idfShell(innerCmd) {
       + `$env:PATH=($env:PATH -split ';' | Where-Object { $_ -notmatch 'msys|mingw|PortableGit' }) -join ';'; `
       + `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; `
       + `$env:IDF_PATH='${IDF_DIR}'; $env:IDF_PYTHON_ENV_PATH='${IDF_VENV}'; `
+      + `$env:IDF_TOOLS_EXPORT_CMD='${IDF_EXPORT}'; $env:IDF_TOOLS_INSTALL_CMD='${IDF_DIR}/install.sh'; `
       + `$env:PATH='${IDF_VENV_BIN};' + $env:PATH; `
-      + `if (-not (& '${IDF_EXPORT}' 2>&1)) { Write-Host "[IDF] export 执行失败: ${IDF_EXPORT}"; exit 9 }; `
-      + `if (-not (Get-Command idf.py -ErrorAction SilentlyContinue)) { Write-Host "[IDF] source 后仍未找到 idf.py，检查 IDF_PATH=${IDF_DIR}"; exit 9 }; `
+      + `if (-not (Test-Path '${IDF_VENV_PY}')) { Write-Host "[IDF] venv python 不存在: ${IDF_VENV_PY}"; exit 9 }; `
+      + `iex "& '${IDF_VENV_PY}' '${IDF_DIR}/tools/idf_tools.py' export"; `
+      + `if (-not (Get-Command idf.py -ErrorAction SilentlyContinue)) { Write-Host "[IDF] export 后仍未找到 idf.py，检查 IDF_PATH=${IDF_DIR} 与 venv=${IDF_VENV}"; exit 9 }; `
       + `Set-Location '${IDF_C2_DIR}'; ${innerCmd}`;
   }
   return `export IDF_PATH="${IDF_DIR}"; export IDF_PYTHON_ENV_PATH="${IDF_VENV}"; `
+    + `export IDF_TOOLS_EXPORT_CMD="${IDF_EXPORT}"; export IDF_TOOLS_INSTALL_CMD="${IDF_DIR}/install.sh"; `
     + `export PATH="${IDF_VENV_BIN}:$PATH"; `
-    + `if ! source "${IDF_EXPORT}" >/dev/null 2>&1; then echo "[IDF] export.sh 执行失败: ${IDF_EXPORT}"; echo "[IDF] 请检查 IDF 环境（可运行: bash ${IDF_EXPORT} 查看报错）"; exit 9; fi; `
-    + `command -v idf.py >/dev/null 2>&1 || { echo "[IDF] source 后仍未找到 idf.py，检查 IDF_PATH=${IDF_DIR} 与 venv=${IDF_VENV}"; echo "[IDF] 可手动验证: source ${IDF_EXPORT} && idf.py --version"; exit 9; }; `
+    + `if [ ! -x "${IDF_VENV_PY}" ]; then echo "[IDF] venv python 不存在: ${IDF_VENV_PY}"; echo "[IDF] 请运行 install.sh 重建: cd ${IDF_DIR} && ./install.sh esp32c2"; exit 9; fi; `
+    + `eval "$("${IDF_VENV_PY}" "${IDF_DIR}/tools/idf_tools.py" export)" || { echo "[IDF] idf_tools.py export 失败（venv=${IDF_VENV}）"; exit 9; }; `
+    + `command -v idf.py >/dev/null 2>&1 || { echo "[IDF] export 后仍未找到 idf.py，检查 IDF_PATH=${IDF_DIR} 与 venv=${IDF_VENV}"; exit 9; }; `
     + `cd "${IDF_C2_DIR}" && ${innerCmd}`;
 }
 
