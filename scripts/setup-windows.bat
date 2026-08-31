@@ -6,6 +6,8 @@ rem  ESP-Switch build environment setup for Windows
 rem  Targets: arduino-cli-web console (C3 / ESP8285 / C2 builds)
 rem  Idempotent: safe to re-run, skips what is already installed.
 rem  NOTE: keep this file ASCII-only to avoid codepage issues.
+rem  Step order kept in sync with scripts/setup-linux.sh:
+rem    [1/5] Node.js  [2/5] ESP-IDF  [3/5] arduino-cli  [4/5] config  [5/5] cores
 rem ============================================================
 
 set "ADB_DIR=%LOCALAPPDATA%\Programs\arduino-cli"
@@ -44,9 +46,25 @@ if %errorlevel%==0 (
   )
 )
 
-rem ---------- 2. arduino-cli ----------
+rem ---------- 2. ESP-IDF (optional, for C2 builds) ----------
 echo.
-echo [2/5] Checking arduino-cli ...
+echo [2/5] ESP-IDF ^(needed for ESP32-C2 builds^) - optional, ~3GB.
+if defined IDF_PATH (
+  echo   [OK] IDF_PATH=%IDF_PATH%
+) else if exist "D:\Espressif\frameworks" (
+  echo   [OK] ESP-IDF found at D:\Espressif ^(official installer layout^).
+) else if exist "C:\Espressif\frameworks" (
+  echo   [OK] ESP-IDF found at C:\Espressif ^(official installer layout^).
+) else (
+  echo   [..] ESP-IDF not detected.
+  echo        For C2 builds install the official ESP-IDF Windows installer:
+  echo        https://dl.espressif.com/dl/esp-idf/
+  echo        ^(choose ESP-IDF v5.5.x, it supports esp32c2 target^)
+)
+
+rem ---------- 3. arduino-cli ----------
+echo.
+echo [3/5] Checking arduino-cli ...
 where arduino-cli >nul 2>nul
 if %errorlevel%==0 (
   for /f "delims=" %%v in ('arduino-cli version') do set "CLI_VER=%%v"
@@ -70,7 +88,7 @@ if %errorlevel%==0 (
   )
 )
 
-rem ---------- 3. arduino-cli config yaml ----------
+rem ---------- 4. arduino-cli config yaml ----------
 rem Prefer the Arduino IDE 2.x data dir (%LOCALAPPDATA%\Arduino15) so the
 rem CLI reuses cores already installed by the IDE; fall back to the
 rem arduino-cli / IDE 1.x default (%USERPROFILE%\.arduino15).
@@ -78,7 +96,7 @@ set "CLI_DATA=%ARDUINO15%"
 if exist "%LOCALAPPDATA%\Arduino15\packages\esp32\hardware\esp32" set "CLI_DATA=%LOCALAPPDATA%\Arduino15"
 if exist "%LOCALAPPDATA%\Arduino15\packages\esp8266\hardware\esp8266" set "CLI_DATA=%LOCALAPPDATA%\Arduino15"
 echo.
-echo [3/5] Checking arduino-cli config ...
+echo [4/5] Checking arduino-cli config ...
 echo   data dir: !CLI_DATA!
 if exist "%CLI_YAML%" (
   > "%TEMP%\esp_yaml.txt" type "%CLI_YAML%"
@@ -114,13 +132,12 @@ if exist "%CLI_YAML%" (
   echo   [OK] config created.
 )
 
-rem ---------- 4. optional: install cores (big download) ----------
-rem Reload PATH first: a winget install from step 2 is not visible in the
-rem current cmd session until a new one starts, which would make step 4
-rem skip the core install.
+rem ---------- 5. optional: install cores (big download) ----------
+rem Reload PATH first: a winget install from step 3 is not visible in the
+rem current cmd session until a new one starts, which would make step 5 skip the core install.
 call :refresh_path
 echo.
-echo [4/5] Arduino cores (esp32 / esp8266) - optional, large download.
+echo [5/5] Arduino cores (esp32 / esp8266) - optional, large download.
 rem Detect cores already installed by Arduino IDE 2.x (%LOCALAPPDATA%\Arduino15)
 rem or by arduino-cli / Arduino IDE 1.x (%USERPROFILE%\.arduino15) so we do not
 rem re-download them.
@@ -175,22 +192,6 @@ if /i "!INSTALL_CORES!"=="y" (
   echo   [SKIP] core install skipped. Re-run with 'y' to install.
 )
 :after_cores
-
-rem ---------- 5. ESP-IDF (optional, for C2 builds) ----------
-echo.
-echo [5/5] ESP-IDF ^(needed for ESP32-C2 builds^) - optional, ~3GB.
-if defined IDF_PATH (
-  echo   [OK] IDF_PATH=%IDF_PATH%
-) else if exist "D:\Espressif\frameworks" (
-  echo   [OK] ESP-IDF found at D:\Espressif ^(official installer layout^).
-) else if exist "C:\Espressif\frameworks" (
-  echo   [OK] ESP-IDF found at C:\Espressif ^(official installer layout^).
-) else (
-  echo   [..] ESP-IDF not detected.
-  echo        For C2 builds install the official ESP-IDF Windows installer:
-  echo        https://dl.espressif.com/dl/esp-idf/
-  echo        ^(choose ESP-IDF v5.5.x, it supports esp32c2 target^)
-)
 
 echo.
 echo ==========================================
