@@ -123,8 +123,17 @@ function findIdfVenv(idfDir) {
       const cands = fs.readdirSync(root)
         .filter(d => d.startsWith(prefix + '_py') && d.endsWith('_env'))
         .sort();
-      const pick = cands.find(d => d.includes('py3.13')) || cands[cands.length - 1];
-      if (pick) return path.join(root, pick);
+      // 不按 python 版本猜：校验 venv 真实可用（python3 存在且能 import click），
+      // 否则 export 时 idf_tools.py 跑在错的 venv 上，$IDF_PATH/tools 不会进 PATH，
+      // 症状就是 source export.sh 成功但 idf.py 仍 command not found。
+      for (const d of cands) {
+        const py = path.join(root, d, 'bin', 'python3');
+        if (!fs.existsSync(py)) continue;
+        try {
+          require('child_process').execFileSync(py, ['-c', 'import click'], { stdio: 'ignore' });
+          return path.join(root, d);
+        } catch (_) { /* click 缺失 -> 跳过 */ }
+      }
     } catch (_) { /* fallthrough */ }
   }
   const fallbackRoot = roots[0] || path.join(os.homedir(), '.espressif', 'python_env');
