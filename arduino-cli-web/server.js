@@ -153,8 +153,9 @@ function scanIdfVenv(idfDir) {
 // 兼容 IDF 5.5 的 python：3.8~3.13（3.14 不被支持，Ubuntu26.04 自带 3.14 会卡死）。
 // 仅探测，不自动下载/安装（用户自行管理工具链）。
 // 扫描顺序：PATH 上的 python3.x -> uv 已管理的独立 CPython（用户自行装过的情况）。
+// 候选顺序与 scripts/setup-linux.sh 的 detect_compat_python 保持一致（3.12 优先：发行版仓库更易获得）。
 function firstCompatiblePython() {
-  const cands = ['python3.13', 'python3.12', 'python3.11', 'python3.10', 'python3.9', 'python3.8'];
+  const cands = ['python3.12', 'python3.13', 'python3.11', 'python3.10', 'python3.9', 'python3.8'];
   for (const c of cands) {
     try {
       const p = execSync('command -v ' + c).toString().trim().split(/\r?\n/)[0];
