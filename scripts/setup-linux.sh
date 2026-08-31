@@ -169,6 +169,80 @@ collect_idf() {  # $1=候选目录
   IDF_COUNT=$((IDF_COUNT+1))
 }
 
+# ---------- 2a. 兼容的 Python 与 IDF venv（关键：Ubuntu 26.04 自带 python3.14，IDF 5.5 不支持）----------
+# IDF 5.5 需要 python 3.8~3.13；系统 python 过新（3.14）会被拒绝，导致 venv 名与系统
+# python 不匹配（如 idf5.5_py3.14_env 不存在），症状就是 idf.py: command not found。
+# 这里：先找 PATH 上已装的兼容 python；找不到就用包管理器装一个；最后用该 python
+# 跑 idf_tools.py install_python_env 建/修 venv。做到「全自动」，无需手动步骤。
+
+# 在 PATH 上探测已装兼容版本，输出 pythonX.Y 或空
+detect_compat_python() {
+  for v in 3.13 3.12 3.11 3.10 3.9 3.8; do
+    if command -v "python$v" >/dev/null 2>&1; then
+      echo "python$v"; return 0
+    fi
+  done
+  return 1
+}
+
+# 用包管理器装一个兼容 python，成功输出 pythonX.Y，失败返回 1
+install_compat_python() {
+  if ! ensure_sudo; then fail "需要 sudo 权限安装兼容 python（3.8~3.13）"; return 1; fi
+  if [ $HAVE_APT -eq 1 ]; then
+    for v in 3.13 3.12 3.11 3.10; do
+      warn "尝试安装 python$v (apt) ..."
+      if $SUDO apt-get update -qq 2>/dev/null \
+         && $SUDO apt-get install -y -qq "python$v" "python$v-venv"; then
+        if command -v "python$v" >/dev/null 2>&1; then ok "已安装 $v"; echo "python$v"; return 0; fi
+      fi
+    done
+  elif [ $HAVE_DNF -eq 1 ]; then
+    for v in 3.13 3.12 3.11 3.10; do
+      warn "尝试安装 python$v (dnf) ..."
+      if $SUDO dnf install -y "python$v"; then
+        command -v "python$v" >/dev/null 2>&1 && { echo "python$v"; return 0; }
+      fi
+    done
+  elif [ $HAVE_BREW -eq 1 ]; then
+    for v in 3.13 3.12 3.11; do
+      warn "尝试安装 python$v (brew) ..."
+      if brew install "python@$v" 2>/dev/null && command -v "python$v" >/dev/null 2>&1; then
+        echo "python$v"; return 0
+      fi
+    done
+  fi
+  return 1
+}
+
+# 确保 IDF 的 python venv 就绪：缺失/失效则自动重建（需联网）
+ensure_idf_python_and_venv() {
+  [ -n "${1:-}" ] || return 0
+  local py; py=$(detect_compat_python) || py=$(install_compat_python) || {
+    fail "未找到亦无法安装兼容 python(3.8~3.13)。Ubuntu 26.04 自带 3.14 不被 IDF 5.5 支持。"
+    fail "请手动安装： sudo apt install python3.12 python3.12-venv  然后重跑本脚本"
+    return 1; }
+
+  # 校验 venv 是否已就绪（存在一个能 import click 的 python3）
+  local penv="$HOME/.espressif/python_env" ready=0 d
+  if [ -d "$penv" ]; then
+    for d in "$penv"/*; do
+      [ -x "$d/bin/python3" ] || continue
+      if "$d/bin/python3" -c "import click" >/dev/null 2>&1; then ready=1; break; fi
+    done
+  fi
+  if [ "$ready" -eq 1 ]; then
+    ok "IDF python venv 已就绪 ($(basename "$d"))"
+    return 0
+  fi
+
+  warn "IDF python venv 缺失/失效，用 $py 自动重建（需联网，约 1~2 分钟）..."
+  if "$py" "$1/tools/idf_tools.py" install_python_env; then
+    ok "IDF python venv 已重建 ($(basename "$d"))"
+  else
+    fail "venv 重建失败（检查网络/权限）。可手动： cd $1 && $py tools/idf_tools.py install_python_env"
+  fi
+}
+
 # 优先：环境变量 IDF_PATH
 collect_idf "${IDF_PATH:-}"
 # 常见布局：~/esp/esp-idf、~/esp/<版本>/esp-idf、/opt/esp-idf
@@ -215,18 +289,24 @@ if [ "$IDF_COUNT" -gt 0 ]; then
   # 用 persist_env 同时写 .bashrc/.zshrc 并当前会话立即生效，避免重开终端
   persist_env "export ESP_SWITCH_IDF_DIR=\"$IDF_HOME\""
   ok "已写入环境变量 ESP_SWITCH_IDF_DIR=$IDF_HOME (已加入 ~/.bashrc 与 ~/.zshrc，当前及新终端均生效)"
+  # 确保 IDF 的 python venv 就绪（Ubuntu 26.04 的 python3.14 不被支持时自动换兼容版本并重建）
+  ensure_idf_python_and_venv "$IDF_HOME"
 else
   warn "未检测到 ESP-IDF"
   read -r -p "    是否现在安装到 ~/esp/esp-idf（v5.5.2，支持 esp32c2）？[y/N]: " INSTALL_IDF
   if [ "$INSTALL_IDF" = "y" ] || [ "$INSTALL_IDF" = "Y" ]; then
-    if command -v git >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+    if command -v git >/dev/null 2>&1; then
       mkdir -p "$HOME/esp" && cd "$HOME/esp"
       git clone --recursive -b v5.5.2 https://github.com/espressif/esp-idf.git esp-idf \
         && cd esp-idf \
-        && ./install.sh esp32c2 \
-        && ok "ESP-IDF v5.5.2 安装完成（~/.espressif 工具链）"
+        && { idfpy=$(detect_compat_python) || idfpy=$(install_compat_python) || idfpy=python3; \
+             echo "    使用 $idfpy 安装工具链..."; \
+             "$idfpy" tools/idf_tools.py install esp32c2; } \
+        && ok "ESP-IDF v5.5.2 工具链安装完成（~/.espressif）"
       IDF_HOME="$HOME/esp/esp-idf"
       persist_env "export ESP_SWITCH_IDF_DIR=\"$IDF_HOME\""
+      # 建/修 python venv（关键：避开系统 python3.14）
+      ensure_idf_python_and_venv "$IDF_HOME"
       echo "    使用前先 source ~/esp/esp-idf/export.sh"
     else
       fail "需要 git 与 python3（>=3.8），请先安装后重试；或按官方文档安装: https://docs.espressif.com/projects/esp-idf/"

@@ -15,7 +15,7 @@ const http = require('http');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawn, exec, execSync } = require('child_process');
+const { spawn, exec, execSync, execFileSync } = require('child_process');
 
 const PORT = process.env.PORT || 8787;
 const isWin = () => process.platform === 'win32';
@@ -95,14 +95,15 @@ const IDF_DIR = findIdfDir() || process.env.IDF_PATH || path.join(os.homedir(), 
 // Windows 用 export.ps1（PowerShell），macOS/Linux 用 export.sh（bash）
 const IDF_EXPORT = isWin() ? path.join(IDF_DIR, 'export.ps1') : path.join(IDF_DIR, 'export.sh');
 
-// IDF 的 python venv（含 click）：显式锁定，避免 export 在 node 进程 PATH 下
-// 探测到无 click 的 python（如 miniconda）而挂错 venv（症状：Cannot import module "click"）。
+// ---- IDF python venv 解析与自愈 ----
 // 解析优先级：
 //   1) 环境变量 IDF_PYTHON_ENV_PATH（source 过 IDF 的 shell 已设好，直接用）
-//   2) 从 IDF_DIR 的 version.cmake 推导前缀（idf5.3 / idf5.4 …），再在候选 python_env 根下探测
+//   2) 从 IDF_DIR 的 version.cmake 推导前缀（idf5.3 / idf5.4 …），扫描真实目录找
+//      第一个「可用」venv（bin/python3 存在且能 import click）。不按 python 小版本猜名，
+//      因为系统 python 版本（如 Ubuntu26.04 的 3.14）可能不被 IDF 支持，导致 venv 名与
+//      系统 python 不匹配（如 idf5.5_py3.14_env 根本不存在）。
 //   3) ESP_SWITCH_IDF_VENV_PREFIX 显式覆盖前缀（跨机 IDF 版本特殊时用）
-function findIdfVenv(idfDir) {
-  if (process.env.IDF_PYTHON_ENV_PATH) return process.env.IDF_PYTHON_ENV_PATH;
+function idfPrefix(idfDir) {
   let prefix = process.env.ESP_SWITCH_IDF_VENV_PREFIX;
   if (!prefix) {
     try {
@@ -112,44 +113,95 @@ function findIdfVenv(idfDir) {
       if (mj && mn) prefix = 'idf' + mj + '.' + mn;
     } catch (_) { /* fallthrough */ }
   }
-  prefix = prefix || 'idf5.3';
-  // 候选 python_env 根：IDF_TOOLS_PATH/python_env（官方安装器）、~/.espressif/python_env
+  return prefix || 'idf5.3';
+}
+
+// 扫描并返回第一个真实可用的 IDF venv：{ dir, bin, py }，找不到返回 null。
+function scanIdfVenv(idfDir) {
+  if (process.env.IDF_PYTHON_ENV_PATH) {
+    const d = process.env.IDF_PYTHON_ENV_PATH;
+    const bin = path.join(d, isWin() ? 'Scripts' : 'bin');
+    const py = path.join(bin, isWin() ? 'python.exe' : 'python3');
+    if (fs.existsSync(py)) {
+      try {
+        execFileSync(py, ['-c', 'import click'], { stdio: 'ignore' });
+        return { dir: d, bin, py };
+      } catch (_) { /* click 缺失，不视为可用 */ }
+    }
+    return null;
+  }
+  const prefix = idfPrefix(idfDir);
   const roots = [
     process.env.IDF_TOOLS_PATH && path.join(process.env.IDF_TOOLS_PATH, 'python_env'),
     path.join(os.homedir(), '.espressif', 'python_env'),
   ].filter(Boolean);
   for (const root of roots) {
-    try {
-      const cands = fs.readdirSync(root)
-        .filter(d => d.startsWith(prefix + '_py') && d.endsWith('_env'))
-        .sort();
-      // 不按 python 版本猜：校验 venv 真实可用（python3 存在且能 import click），
-      // 否则 export 时 idf_tools.py 跑在错的 venv 上，$IDF_PATH/tools 不会进 PATH，
-      // 症状就是 source export.sh 成功但 idf.py 仍 command not found。
-      for (const d of cands) {
-        const py = path.join(root, d, 'bin', 'python3');
-        if (!fs.existsSync(py)) continue;
-        try {
-          require('child_process').execFileSync(py, ['-c', 'import click'], { stdio: 'ignore' });
-          return path.join(root, d);
-        } catch (_) { /* click 缺失 -> 跳过 */ }
-      }
-    } catch (_) { /* fallthrough */ }
+    let dirs; try { dirs = fs.readdirSync(root); } catch (_) { continue; }
+    const cands = dirs.filter(d => d.startsWith(prefix + '_py') && d.endsWith('_env')).sort();
+    for (const d of cands) {
+      const py = path.join(root, d, 'bin', 'python3');
+      if (!fs.existsSync(py)) continue;
+      try {
+        execFileSync(py, ['-c', 'import click'], { stdio: 'ignore' });
+        return { dir: path.join(root, d), bin: path.join(root, d, 'bin'), py };
+      } catch (_) { /* click 缺失 -> 跳过 */ }
+    }
   }
-  const fallbackRoot = roots[0] || path.join(os.homedir(), '.espressif', 'python_env');
-  return path.join(fallbackRoot, prefix + '_py3.13_env');
+  return null;
 }
-const IDF_VENV = findIdfVenv(IDF_DIR);
-// Windows venv 的可执行目录是 Scripts，macOS/Linux 是 bin
-const IDF_VENV_BIN = firstExisting([path.join(IDF_VENV, 'Scripts'), path.join(IDF_VENV, 'bin')]) || path.join(IDF_VENV, 'bin');
-const IDF_VENV_PY = path.join(IDF_VENV_BIN, isWin() ? 'python.exe' : 'python3');
+
+// 兼容 IDF 5.5 的 python：3.8~3.13（3.14 不被支持，Ubuntu26.04 自带 3.14 会卡死）。
+// 扫描 PATH 上的 python3.x（系统默认 python3 若是 3.14 则不返回）。
+function firstCompatiblePython() {
+  const cands = ['python3.13', 'python3.12', 'python3.11', 'python3.10', 'python3.9', 'python3.8'];
+  for (const c of cands) {
+    try {
+      const p = execSync('command -v ' + c).toString().trim().split(/\r?\n/)[0];
+      if (p) return p;
+    } catch (_) { /* not found */ }
+  }
+  return null;
+}
+
+// 用兼容 python 跑 idf_tools.py install_python_env，自动建出 venv。
+// 返回 { dir, bin, py } 或 null（失败：无兼容 python / 网络 / 权限）。
+function createIdfVenv(idfDir) {
+  const py = firstCompatiblePython();
+  if (!py) return null;
+  // 清理可能残留的无效 venv 目录（如 Ubuntu 用系统 3.14 残留的 idf5.5_py3.14_env），
+  // 否则 install_python_env 可能拒绝重建或复用坏环境。
+  const prefix = idfPrefix(idfDir);
+  const penv = path.join(os.homedir(), '.espressif', 'python_env');
+  try {
+    for (const d of fs.readdirSync(penv)) {
+      if (d.startsWith(prefix + '_py') && d.endsWith('_env')) {
+        const p = path.join(penv, d);
+        if (!fs.existsSync(path.join(p, 'bin', 'python3'))) {
+          try { fs.rmSync(p, { recursive: true, force: true }); } catch (_) {}
+        }
+      }
+    }
+  } catch (_) { /* ignore */ }
+  try {
+    execFileSync(py, [path.join(idfDir, 'tools', 'idf_tools.py'), 'install_python_env'],
+      { stdio: 'ignore', timeout: 10 * 60 * 1000 });
+  } catch (_) { return null; }
+  return scanIdfVenv(idfDir);
+}
+
+// 模块加载时的最佳猜测（仅供状态展示与启动日志；实际构建走 scanIdfVenv 动态解析）
+const IDF_VENV_INFO = scanIdfVenv(IDF_DIR);
+const IDF_VENV = IDF_VENV_INFO ? IDF_VENV_INFO.dir : '';
+const IDF_VENV_BIN = IDF_VENV_INFO ? IDF_VENV_INFO.bin : path.join(os.homedir(), '.espressif', 'python_env', 'idf5.3_py3.13_env', 'bin');
+const IDF_VENV_PY = IDF_VENV_INFO ? IDF_VENV_INFO.py : path.join(IDF_VENV_BIN, 'python3');
 
 // 统一拼一条「初始化 IDF 环境后执行命令」的 shell（按平台选 PowerShell / bash）。
 // 不 source export.sh —— 它内部会重新探测系统 python（如 Ubuntu 默认 python3.14）并按
 // 该版本找 venv（idfX.Y_py<系统版本>_env），系统 python 过新/过旧会直接失败。
-// 改为：直接用 server 已校验有效的 venv python 执行 idf_tools.py export，eval 其输出。
-// 这样 IDF 环境完全由 IDF_VENV（校验过 click）决定，系统 python 版本无关。
-function idfShell(innerCmd) {
+// 改为：直接用校验有效的 venv python 执行 idf_tools.py export，eval 其输出。
+// 这样 IDF 环境完全由 venv（已校验 click）决定，系统 python 版本无关。
+function idfShell(innerCmd, venv) {
+  const vdir = venv.dir, vbin = venv.bin, vpy = venv.py;
   if (isWin()) {
     // 清除 MSYS 环境（若 server 从 Git Bash 启动，子进程会继承 MSYSTEM 与
     // MSYS 路径，IDF 会拒绝 "MSys/Mingw is not supported"）；并强制 UTF-8 输出，
@@ -157,20 +209,20 @@ function idfShell(innerCmd) {
     return `$env:MSYSTEM=$null; $env:MSYS=$null; `
       + `$env:PATH=($env:PATH -split ';' | Where-Object { $_ -notmatch 'msys|mingw|PortableGit' }) -join ';'; `
       + `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; `
-      + `$env:IDF_PATH='${IDF_DIR}'; $env:IDF_PYTHON_ENV_PATH='${IDF_VENV}'; `
+      + `$env:IDF_PATH='${IDF_DIR}'; $env:IDF_PYTHON_ENV_PATH='${vdir}'; `
       + `$env:IDF_TOOLS_EXPORT_CMD='${IDF_EXPORT}'; $env:IDF_TOOLS_INSTALL_CMD='${IDF_DIR}/install.sh'; `
-      + `$env:PATH='${IDF_VENV_BIN};' + $env:PATH; `
-      + `if (-not (Test-Path '${IDF_VENV_PY}')) { Write-Host "[IDF] venv python 不存在: ${IDF_VENV_PY}"; exit 9 }; `
-      + `iex "& '${IDF_VENV_PY}' '${IDF_DIR}/tools/idf_tools.py' export"; `
-      + `if (-not (Get-Command idf.py -ErrorAction SilentlyContinue)) { Write-Host "[IDF] export 后仍未找到 idf.py，检查 IDF_PATH=${IDF_DIR} 与 venv=${IDF_VENV}"; exit 9 }; `
+      + `$env:PATH='${vbin};' + $env:PATH; `
+      + `if (-not (Test-Path '${vpy}')) { Write-Host "[IDF] venv python 不存在: ${vpy}"; exit 9 }; `
+      + `iex "& '${vpy}' '${IDF_DIR}/tools/idf_tools.py' export"; `
+      + `if (-not (Get-Command idf.py -ErrorAction SilentlyContinue)) { Write-Host "[IDF] export 后仍未找到 idf.py，检查 IDF_PATH=${IDF_DIR} 与 venv=${vdir}"; exit 9 }; `
       + `Set-Location '${IDF_C2_DIR}'; ${innerCmd}`;
   }
-  return `export IDF_PATH="${IDF_DIR}"; export IDF_PYTHON_ENV_PATH="${IDF_VENV}"; `
+  return `export IDF_PATH="${IDF_DIR}"; export IDF_PYTHON_ENV_PATH="${vdir}"; `
     + `export IDF_TOOLS_EXPORT_CMD="${IDF_EXPORT}"; export IDF_TOOLS_INSTALL_CMD="${IDF_DIR}/install.sh"; `
-    + `export PATH="${IDF_VENV_BIN}:$PATH"; `
-    + `if [ ! -x "${IDF_VENV_PY}" ]; then echo "[IDF] venv python 不存在: ${IDF_VENV_PY}"; echo "[IDF] 请运行 install.sh 重建: cd ${IDF_DIR} && ./install.sh esp32c2"; exit 9; fi; `
-    + `eval "$("${IDF_VENV_PY}" "${IDF_DIR}/tools/idf_tools.py" export)" || { echo "[IDF] idf_tools.py export 失败（venv=${IDF_VENV}）"; exit 9; }; `
-    + `command -v idf.py >/dev/null 2>&1 || { echo "[IDF] export 后仍未找到 idf.py，检查 IDF_PATH=${IDF_DIR} 与 venv=${IDF_VENV}"; exit 9; }; `
+    + `export PATH="${vbin}:$PATH"; `
+    + `if [ ! -x "${vpy}" ]; then echo "[IDF] venv python 不存在: ${vpy}"; echo "[IDF] 请运行 install.sh 重建: cd ${IDF_DIR} && ./install.sh esp32c2"; exit 9; fi; `
+    + `eval "$("${vpy}" "${IDF_DIR}/tools/idf_tools.py" export)" || { echo "[IDF] idf_tools.py export 失败（venv=${vdir}）"; exit 9; }; `
+    + `command -v idf.py >/dev/null 2>&1 || { echo "[IDF] export 后仍未找到 idf.py，检查 IDF_PATH=${IDF_DIR} 与 venv=${vdir}"; exit 9; }; `
     + `cd "${IDF_C2_DIR}" && ${innerCmd}`;
 }
 
@@ -627,13 +679,13 @@ function ensureArduinoComponent() {
   };
 }
 
-// 以 SSE 方式流式执行一条 idf.py 命令：source IDF 环境后，在 idf-c2 目录跑构建/烧录。
-// IDF_C2_BOARD 通过 env 注入，供 idf-c2/main/CMakeLists.txt 选择产品板宏。
+// 以 SSE 方式流式执行一条 idf.py 命令：先确保 IDF python venv 就绪（缺失则自动重建），
+// 再初始化 IDF 环境后在 idf-c2 目录跑构建/烧录。IDF_C2_BOARD 通过 env 注入。
 // Windows 用 PowerShell 执行（ESP-IDF 官方仅支持 cmd/PowerShell，bash 会被 MSYS 检测拒绝），
 // macOS/Linux 用 bash。
-function runIdfStream(res, shell, label, board) {
+function runIdfStream(res, innerCmd, label, board) {
   sseHeaders(res);
-  sseSend(res, 'start', { label, cli: 'idf.py', args: shell });
+  sseSend(res, 'start', { label, cli: 'idf.py', args: innerCmd });
 
   const ac = ensureArduinoComponent();
   if (!ac.ok) {
@@ -643,40 +695,94 @@ function runIdfStream(res, shell, label, board) {
     return;
   }
 
-  const env = Object.assign({}, process.env, { IDF_C2_BOARD: board });
-  let child;
-  try {
-    if (isWin()) {
-      child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', shell], { cwd: IDF_C2_DIR, env });
-    } else {
-      child = spawn('bash', ['-c', shell], { cwd: IDF_C2_DIR, env });
+  // 实际跑构建（venv 已就绪）
+  const startBuild = (venv) => {
+    const shell = idfShell(innerCmd, venv);
+    const env = Object.assign({}, process.env, { IDF_C2_BOARD: board });
+    let child;
+    try {
+      if (isWin()) {
+        child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', shell], { cwd: IDF_C2_DIR, env });
+      } else {
+        child = spawn('bash', ['-c', shell], { cwd: IDF_C2_DIR, env });
+      }
+    } catch (e) {
+      sseSend(res, 'err', 'spawn error: ' + e.message);
+      sseSend(res, 'done', { code: -1 });
+      try { res.end(); } catch (_) {}
+      return;
     }
-  } catch (e) {
-    sseSend(res, 'err', 'spawn error: ' + e.message);
+
+    const cleanup = () => { try { child.kill('SIGKILL'); } catch (_) {} };
+    res.on('close', cleanup);
+
+    child.stdout.on('data', d => sseSend(res, 'out', d.toString()));
+    child.stderr.on('data', d => sseSend(res, 'err', d.toString()));
+    child.on('error', err => {
+      sseSend(res, 'err', 'spawn error: ' + err.message);
+      sseSend(res, 'done', { code: -1 });
+      try { res.end(); } catch (_) {}
+    });
+    child.on('close', code => {
+      code = code == null ? 0 : code;
+      if (code === 0) {
+        // 产物名 = 工程名（idf.py 绑定），前端显示为板子名
+        const files = collectIdfFirmware(board);
+        sseSend(res, 'firmware', { files, size: null, board: board || '' });
+      }
+      sseSend(res, 'done', { code });
+      try { res.end(); } catch (_) {}
+    });
+  };
+
+  // venv 已存在且可用 -> 直接构建
+  const existing = scanIdfVenv(IDF_DIR);
+  if (existing) { startBuild(existing); return; }
+
+  // venv 缺失 -> 自动重建（用兼容 python 跑 idf_tools.py install_python_env）
+  sseSend(res, 'sys', '[IDF] 未检测到 python venv，尝试自动重建（首次需联网下载 click 等依赖，约 1~2 分钟）...');
+  const py = firstCompatiblePython();
+  if (!py) {
+    sseSend(res, 'err', '[IDF] 当前系统 python 不被 IDF 5.5 支持（需 3.8~3.13）。Ubuntu 26.04 自带 python3.14 无法创建 venv。');
+    sseSend(res, 'err', '       请先安装兼容 python： sudo apt install python3.13 python3.13-venv');
+    sseSend(res, 'err', '       安装后重跑 setup-linux.sh 或本构建即可自动接管。');
     sseSend(res, 'done', { code: -1 });
     try { res.end(); } catch (_) {}
     return;
   }
-
-  const cleanup = () => { try { child.kill('SIGKILL'); } catch (_) {} };
-  res.on('close', cleanup);
-
-  child.stdout.on('data', d => sseSend(res, 'out', d.toString()));
+  let child;
+  try {
+    child = spawn(py, [path.join(IDF_DIR, 'tools', 'idf_tools.py'), 'install_python_env'],
+      { cwd: IDF_DIR, env: Object.assign({}, process.env, { IDF_PATH: IDF_DIR }) });
+  } catch (e) {
+    sseSend(res, 'err', '[IDF] 启动 idf_tools.py 失败: ' + e.message);
+    sseSend(res, 'done', { code: -1 });
+    try { res.end(); } catch (_) {}
+    return;
+  }
+  child.stdout.on('data', d => sseSend(res, 'sys', d.toString()));
   child.stderr.on('data', d => sseSend(res, 'err', d.toString()));
   child.on('error', err => {
-    sseSend(res, 'err', 'spawn error: ' + err.message);
+    sseSend(res, 'err', '[IDF] venv 创建启动失败: ' + err.message);
     sseSend(res, 'done', { code: -1 });
     try { res.end(); } catch (_) {}
   });
   child.on('close', code => {
     code = code == null ? 0 : code;
-    if (code === 0) {
-      // 产物名 = 工程名（idf.py 绑定），前端显示为板子名
-      const files = collectIdfFirmware(board);
-      sseSend(res, 'firmware', { files, size: null, board: board || '' });
+    if (code !== 0) {
+      sseSend(res, 'err', '[IDF] venv 创建失败，退出码 ' + code + '（检查网络/权限，或手动：cd ' + IDF_DIR + ' && ' + py + ' tools/idf_tools.py install_python_env）');
+      sseSend(res, 'done', { code });
+      try { res.end(); } catch (_) {}
+      return;
     }
-    sseSend(res, 'done', { code });
-    try { res.end(); } catch (_) {}
+    const v = scanIdfVenv(IDF_DIR);
+    if (!v) {
+      sseSend(res, 'err', '[IDF] venv 创建后仍无法定位，请检查 ~/.espressif/python_env');
+      sseSend(res, 'done', { code: -1 });
+      try { res.end(); } catch (_) {}
+      return;
+    }
+    startBuild(v);
   });
 }
 
@@ -834,9 +940,7 @@ const server = http.createServer((req, res) => {
       const setCmd = `idf.py -B "${bdir}" set-target ${target}`;
       inner = isWin() ? `${setCmd}; if ($LASTEXITCODE -eq 0) { ${idfCmd} }` : `${setCmd} && ${idfCmd}`;
     }
-    // idfShell() 内部已按平台初始化 IDF 环境（Win: export.ps1 / mac-Linux: export.sh）并进入 idf-c2
-    const shell = idfShell(inner);
-    runIdfStream(res, shell, (action === 'flash' ? 'C2 构建并烧录' : 'C2 构建'), board);
+    runIdfStream(res, inner, (action === 'flash' ? 'C2 构建并烧录' : 'C2 构建'), board);
     return;
   }
 
