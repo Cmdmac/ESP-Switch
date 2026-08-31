@@ -118,6 +118,10 @@ function idfPrefix(idfDir) {
 
 // 扫描并返回第一个真实可用的 IDF venv：{ dir, bin, py }，找不到返回 null。
 function scanIdfVenv(idfDir) {
+  // 1) 环境变量指定的 venv（source 过 IDF 的 shell 里会有）——仅当其真实可用时优先采用；
+  //    失效（路径不存在 / click 缺失）时【不要】直接返回 null，继续走磁盘扫描兜底。
+  //    否则 shell 里残留一个过期 IDF_PYTHON_ENV_PATH（如重装 IDF 后旧 venv 路径失效），
+  //    会永远找不到新装的 venv，症状就是装完 IDF 仍报"无兼容 python"。
   if (process.env.IDF_PYTHON_ENV_PATH) {
     const d = process.env.IDF_PYTHON_ENV_PATH;
     const bin = path.join(d, isWin() ? 'Scripts' : 'bin');
@@ -128,7 +132,8 @@ function scanIdfVenv(idfDir) {
         return { dir: d, bin, py };
       } catch (_) { /* click 缺失，不视为可用 */ }
     }
-    return null;
+    // 环境变量失效：fall through，落到磁盘扫描
+    console.log('[IDF] IDF_PYTHON_ENV_PATH 失效（' + d + '），回退磁盘扫描 ' + path.join(os.homedir(), '.espressif', 'python_env'));
   }
   const prefix = idfPrefix(idfDir);
   const roots = [
