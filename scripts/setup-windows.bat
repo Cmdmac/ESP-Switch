@@ -133,9 +133,10 @@ if exist "%CLI_YAML%" (
 )
 
 rem ---------- 5. optional: install cores (big download) ----------
-rem Reload PATH first: a winget install from step 3 is not visible in the
-rem current cmd session until a new one starts, which would make step 5 skip the core install.
-call :refresh_path
+rem 若本回合步骤 3 通过 winget 新装了 arduino-cli，其路径尚未进入当前会话 PATH，
+rem 需在尝试安装 core 前从注册表重新加载 PATH。为避免覆盖会话内已可用的 arduino-cli
+rem （注册表里可能没有，refresh_path 会整体替换 PATH 导致丢失），该刷新仅作为回退、
+rem 在会话 PATH 中找不到 arduino-cli 时才执行（见下方 :refresh_path 调用处）。
 echo.
 echo [5/5] Arduino cores (esp32 / esp8266) - optional, large download.
 rem Detect cores already installed by Arduino IDE 2.x (%LOCALAPPDATA%\Arduino15)
@@ -163,13 +164,21 @@ if defined HAVE_ESP32 if defined HAVE_ESP8266 (
 )
 set /p INSTALL_CORES="  Install missing cores now? [y/N]: "
 if /i "!INSTALL_CORES!"=="y" (
+  set "CLI_CMD="
+  rem 优先用当前会话 PATH 里已可用的 arduino-cli（步骤 3 已确认能找到）。
+  rem 仅当会话 PATH 里没有时，才从注册表重新加载 PATH（覆盖本回合 winget 新装的），
+  rem 再尝试；最后回退到已知安装目录 %ADB_DIR%。
   where arduino-cli >nul 2>nul
   if !errorlevel!==0 (
     set "CLI_CMD=arduino-cli"
-  ) else if exist "%ADB_DIR%\arduino-cli.exe" (
-    set "CLI_CMD=%ADB_DIR%\arduino-cli.exe"
   ) else (
-    set "CLI_CMD="
+    call :refresh_path
+    where arduino-cli >nul 2>nul
+    if !errorlevel!==0 (
+      set "CLI_CMD=arduino-cli"
+    ) else if exist "%ADB_DIR%\arduino-cli.exe" (
+      set "CLI_CMD=%ADB_DIR%\arduino-cli.exe"
+    )
   )
   if defined CLI_CMD (
     echo   Updating core index ...
