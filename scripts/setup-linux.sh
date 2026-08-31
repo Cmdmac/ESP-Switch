@@ -150,100 +150,8 @@ else
   fi
 fi
 
-# ---------- 2. arduino-cli ----------
-echo; echo "[2/5] arduino-cli"
-if command -v arduino-cli >/dev/null 2>&1; then
-  ok "arduino-cli 已安装: $(arduino-cli version 2>/dev/null | head -1)"
-else
-  warn "未检测到 arduino-cli，开始安装 ..."
-  if ensure_downloader; then
-    # 优先官方 install.sh（需要 curl）；失败或只有 wget 时直下 release 二进制
-    if command -v curl >/dev/null 2>&1; then
-      curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
-      export PATH="$HOME/bin:$PATH"
-    fi
-    if ! command -v arduino-cli >/dev/null 2>&1; then
-      echo "    直接下载 arduino-cli 二进制 ..."
-      mkdir -p "$HOME/bin"
-      fetch "https://downloads.arduino.cc/arduino-cli/arduino-cli_latest_Linux_64bit.tar.gz" /tmp/arduino-cli.tar.gz \
-        && tar -xzf /tmp/arduino-cli.tar.gz -C "$HOME/bin" arduino-cli \
-        && chmod +x "$HOME/bin/arduino-cli" \
-        && export PATH="$HOME/bin:$PATH"
-    fi
-    if command -v arduino-cli >/dev/null 2>&1; then
-      ok "arduino-cli 已安装: $(arduino-cli version | head -1)"
-      persist_env 'export PATH="$HOME/bin:$PATH"'
-    else
-      fail "安装失败，请手动安装：https://github.com/arduino/arduino-cli/releases"
-    fi
-  else
-    fail "缺少 curl 且无法自动安装，请手动执行 sudo apt install curl 后重试"
-  fi
-fi
-
-# ---------- 3. arduino-cli 配置 ----------
-echo; echo "[3/5] arduino-cli 配置 (~/.arduino15/arduino-cli.yaml)"
-ARDUINO15="$HOME/.arduino15"
-CLI_YAML="$ARDUINO15/arduino-cli.yaml"
-if [ -f "$CLI_YAML" ]; then
-  ok "配置已存在: $CLI_YAML"
-else
-  mkdir -p "$ARDUINO15"
-  cat > "$CLI_YAML" <<EOF
-directories:
-  data: $ARDUINO15
-  downloads: $ARDUINO15/staging
-board_manager:
-  additional_urls:
-    - https://espressif.github.io/arduino-esp32/package_esp32_index.json
-    - https://arduino.esp8266.com/stable/package_esp8266com_index.json
-EOF
-  ok "配置已生成: $CLI_YAML"
-fi
-
-# ---------- 4. 可选：安装核心包（大下载） ----------
-echo; echo "[4/5] Arduino 核心包 (esp32 / esp8266，可选，约 1GB+ 下载)"
-# 若 IDF 已就绪（上面的 [5/5] 是倒序？不，这里按脚本原顺序执行），提示复用：
-# 本脚本顺序为 1..5，IDF 检测在 [5/5]，故在此先做一次轻量探测用于提示。
-IDF_DETECTED_TMP=""
-if [ -n "${ESP_SWITCH_IDF_DIR:-}" ] && [ -f "$ESP_SWITCH_IDF_DIR/export.sh" ]; then
-  IDF_DETECTED_TMP="$ESP_SWITCH_IDF_DIR"
-elif [ -n "${IDF_PATH:-}" ] && [ -f "$IDF_PATH/export.sh" ]; then
-  IDF_DETECTED_TMP="$IDF_PATH"
-elif [ -d "$HOME/.espressif/tools/riscv32-esp-elf" ]; then
-  IDF_DETECTED_TMP="$HOME/.espressif"
-fi
-if [ -n "$IDF_DETECTED_TMP" ]; then
-  echo "    检测到 ESP-IDF 环境: $IDF_DETECTED_TMP"
-  echo "      C2 编译走 IDF，无需 arduino 的 esp32c2-libs；"
-  echo "      此处仍会安装 esp32 核心包（C3 编译必需），esp8266 核心包（8285 必需）。"
-fi
-read -r -p "    现在安装核心包？[y/N]: " INSTALL_CORES
-if [ "$INSTALL_CORES" = "y" ] || [ "$INSTALL_CORES" = "Y" ]; then
-  if command -v arduino-cli >/dev/null 2>&1; then
-    # 已安装的核心直接跳过，避免重复下载
-    CORE_LIST=$(arduino-cli --config-file "$CLI_YAML" core list 2>/dev/null)
-    NEED=""
-    echo "$CORE_LIST" | grep -q "esp32:esp32 "        || NEED="$NEED esp32:esp32"
-    echo "$CORE_LIST" | grep -q "esp8266:esp8266"     || NEED="$NEED esp8266:esp8266"
-    if [ -z "$NEED" ]; then
-      ok "esp32:esp32 与 esp8266:esp8266 均已安装，跳过"
-    else
-      echo "    更新核心索引 ..."
-      arduino-cli --config-file "$CLI_YAML" core update-index || warn "索引更新失败（可能网络问题）"
-      echo "    安装缺失核心: $NEED (耗时较长)..."
-      arduino-cli --config-file "$CLI_YAML" core install $NEED \
-        && ok "核心包安装完成" || warn "核心包安装失败，可稍后手动执行: arduino-cli core install esp32:esp32 esp8266:esp8266"
-    fi
-  else
-    warn "arduino-cli 尚不可用，跳过核心包安装"
-  fi
-else
-  warn "跳过核心包安装。之后可重跑本脚本选择 y，或手动执行 arduino-cli core install"
-fi
-
-# ---------- 5. ESP-IDF（C2 编译需要）：扫描已有环境 -> 多选 -> 写入环境变量 ----------
-echo; echo "[5/5] ESP-IDF（ESP32-C2 编译需要，可选，约 3GB）"
+# ---------- 2. ESP-IDF（C2 编译需要）：扫描已有环境 -> 多选 -> 写入环境变量 ----------
+echo; echo "[2/5] ESP-IDF（ESP32-C2 编译需要，可选，约 3GB）"
 
 # 收集所有有效的 ESP-IDF（目录内含 export.sh 即视为有效）
 IDF_FOUND=()
@@ -331,6 +239,89 @@ else
   else
     warn "跳过 ESP-IDF。C2 编译将不可用，其余板型不受影响"
   fi
+fi
+
+# ---------- 3. arduino-cli ----------
+echo; echo "[3/5] arduino-cli"
+if command -v arduino-cli >/dev/null 2>&1; then
+  ok "arduino-cli 已安装: $(arduino-cli version 2>/dev/null | head -1)"
+else
+  warn "未检测到 arduino-cli，开始安装 ..."
+  if ensure_downloader; then
+    # 优先官方 install.sh（需要 curl）；失败或只有 wget 时直下 release 二进制
+    if command -v curl >/dev/null 2>&1; then
+      curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+      export PATH="$HOME/bin:$PATH"
+    fi
+    if ! command -v arduino-cli >/dev/null 2>&1; then
+      echo "    直接下载 arduino-cli 二进制 ..."
+      mkdir -p "$HOME/bin"
+      fetch "https://downloads.arduino.cc/arduino-cli/arduino-cli_latest_Linux_64bit.tar.gz" /tmp/arduino-cli.tar.gz \
+        && tar -xzf /tmp/arduino-cli.tar.gz -C "$HOME/bin" arduino-cli \
+        && chmod +x "$HOME/bin/arduino-cli" \
+        && export PATH="$HOME/bin:$PATH"
+    fi
+    if command -v arduino-cli >/dev/null 2>&1; then
+      ok "arduino-cli 已安装: $(arduino-cli version | head -1)"
+      persist_env 'export PATH="$HOME/bin:$PATH"'
+    else
+      fail "安装失败，请手动安装：https://github.com/arduino/arduino-cli/releases"
+    fi
+  else
+    fail "缺少 curl 且无法自动安装，请手动执行 sudo apt install curl 后重试"
+  fi
+fi
+
+# ---------- 4. arduino-cli 配置 ----------
+echo; echo "[4/5] arduino-cli 配置 (~/.arduino15/arduino-cli.yaml)"
+ARDUINO15="$HOME/.arduino15"
+CLI_YAML="$ARDUINO15/arduino-cli.yaml"
+if [ -f "$CLI_YAML" ]; then
+  ok "配置已存在: $CLI_YAML"
+else
+  mkdir -p "$ARDUINO15"
+  cat > "$CLI_YAML" <<EOF
+directories:
+  data: $ARDUINO15
+  downloads: $ARDUINO15/staging
+board_manager:
+  additional_urls:
+    - https://espressif.github.io/arduino-esp32/package_esp32_index.json
+    - https://arduino.esp8266.com/stable/package_esp8266com_index.json
+EOF
+  ok "配置已生成: $CLI_YAML"
+fi
+
+# ---------- 5. 可选：安装核心包（大下载） ----------
+echo; echo "[5/5] Arduino 核心包 (esp32 / esp8266，可选，约 1GB+ 下载)"
+# IDF 已在 [2/5] 检测并写入 IDF_HOME，这里直接复用结果做提示
+if [ -n "${IDF_HOME:-}" ]; then
+  echo "    检测到 ESP-IDF 环境: $IDF_HOME"
+  echo "      C2 编译走 IDF，无需 arduino 的 esp32c2-libs；"
+  echo "      此处仍会安装 esp32 核心包（C3 编译必需），esp8266 核心包（8285 必需）。"
+fi
+read -r -p "    现在安装核心包？[y/N]: " INSTALL_CORES
+if [ "$INSTALL_CORES" = "y" ] || [ "$INSTALL_CORES" = "Y" ]; then
+  if command -v arduino-cli >/dev/null 2>&1; then
+    # 已安装的核心直接跳过，避免重复下载
+    CORE_LIST=$(arduino-cli --config-file "$CLI_YAML" core list 2>/dev/null)
+    NEED=""
+    echo "$CORE_LIST" | grep -q "esp32:esp32 "        || NEED="$NEED esp32:esp32"
+    echo "$CORE_LIST" | grep -q "esp8266:esp8266"     || NEED="$NEED esp8266:esp8266"
+    if [ -z "$NEED" ]; then
+      ok "esp32:esp32 与 esp8266:esp8266 均已安装，跳过"
+    else
+      echo "    更新核心索引 ..."
+      arduino-cli --config-file "$CLI_YAML" core update-index || warn "索引更新失败（可能网络问题）"
+      echo "    安装缺失核心: $NEED (耗时较长)..."
+      arduino-cli --config-file "$CLI_YAML" core install $NEED \
+        && ok "核心包安装完成" || warn "核心包安装失败，可稍后手动执行: arduino-cli core install esp32:esp32 esp8266:esp8266"
+    fi
+  else
+    warn "arduino-cli 尚不可用，跳过核心包安装"
+  fi
+else
+  warn "跳过核心包安装。之后可重跑本脚本选择 y，或手动执行 arduino-cli core install"
 fi
 
 # ---------- 串口权限提示 ----------
