@@ -210,7 +210,8 @@ const IDF_VENV_PY = IDF_VENV_INFO ? IDF_VENV_INFO.py : path.join(IDF_VENV_BIN, i
 // 统一拼一条「初始化 IDF 环境后执行命令」的 shell（按平台选 PowerShell / bash）。
 // 不 source export.sh —— 它内部会重新探测系统 python（如 Ubuntu 默认 python3.14）并按
 // 该版本找 venv（idfX.Y_py<系统版本>_env），系统 python 过新/过旧会直接失败。
-// 改为：直接用校验有效的 venv python 执行 idf_tools.py export，eval 其输出。
+// 改为：直接用校验有效的 venv python 执行 idf_tools.py export，消费其输出
+// （Linux/macOS: eval bash 格式；Windows: --format key-value 逐行解析，见下方）。
 // 这样 IDF 环境完全由 venv（已校验 click）决定，系统 python 版本无关。
 function idfShell(innerCmd, venv) {
   const vdir = venv.dir, vbin = venv.bin, vpy = venv.py;
@@ -225,7 +226,16 @@ function idfShell(innerCmd, venv) {
       + `$env:IDF_TOOLS_EXPORT_CMD='${IDF_EXPORT}'; $env:IDF_TOOLS_INSTALL_CMD='${IDF_DIR}/install.sh'; `
       + `$env:PATH='${vbin};' + $env:PATH; `
       + `if (-not (Test-Path '${vpy}')) { Write-Host "[IDF] venv python 不存在: ${vpy}"; exit 9 }; `
-      + `iex "& '${vpy}' '${IDF_DIR}/tools/idf_tools.py' export"; `
+      // Windows 不能直接 eval idf_tools.py 的默认(shell)格式输出——它是 bash 语法
+      // `export PATH="...;%PATH%"`，PowerShell 里 `export` 不是命令、`%PATH%` 是字面量。
+      // 照官方 export.ps1 的做法：`--format key-value` 输出 VAR=value 行，逐行解析；
+      // PATH 值末尾的 `%PATH%` 是占位符，修剪后把当前 PATH 拼回去。
+      + `$__idf = & '${vpy}' '${IDF_DIR}\\tools\\idf_tools.py' export --format key-value; `
+      + `if ($LASTEXITCODE -ne 0) { Write-Host "[IDF] idf_tools.py export 失败（venv=${vdir}）"; exit 9 }; `
+      + `foreach ($__l in $__idf) { $__i = $__l.IndexOf('='); if ($__i -le 0) { continue }; `
+      + `  $__n = $__l.Substring(0, $__i).Trim(); $__v = $__l.Substring($__i + 1).Trim(); `
+      + `  if ($__n -eq 'PATH') { $env:PATH = ($__v -replace ';?%PATH%$', '') + ';' + $env:PATH } `
+      + `  else { Set-Item -Path ('env:' + $__n) -Value $__v -Force } }; `
       + `if (-not (Get-Command idf.py -ErrorAction SilentlyContinue)) { Write-Host "[IDF] export 后仍未找到 idf.py，检查 IDF_PATH=${IDF_DIR} 与 venv=${vdir}"; exit 9 }; `
       + `Set-Location '${IDF_C2_DIR}'; ${innerCmd}`;
   }
