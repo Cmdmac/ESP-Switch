@@ -32,19 +32,26 @@ if %errorlevel%==0 (
   )
 ) else (
   echo   [..] Node.js not found.
+  set "INSTALL_NODE="
+  set /p "INSTALL_NODE=  Node.js is required. Download and install Node.js LTS now? [y/N]: "
+  if /i not "!INSTALL_NODE!"=="y" (
+    echo   [SKIP] Node.js not installed. Install it manually from https://nodejs.org
+    goto :after_node
+  )
+  echo   [..] Installing Node.js LTS ...
   where winget >nul 2>nul
   if !errorlevel!==0 (
-    echo   Installing Node.js LTS via winget ...
+    echo   Installing via winget ...
     winget install --id OpenJS.NodeJS.LTS -e --accept-source-agreements --accept-package-agreements
     if !errorlevel!==0 (
-      echo   [OK] Node.js installed. New terminal may be required for PATH.
-    ) else (
-      echo   [FAIL] winget install failed. Install Node.js LTS manually from https://nodejs.org
+      echo   [OK] Node.js installed via winget. New terminal may be required for PATH.
+      goto :after_node
     )
-  ) else (
-    echo   [FAIL] winget not available. Install Node.js LTS manually from https://nodejs.org
+    echo   [..] winget install failed, falling back to direct download ...
   )
+  call :install_node_direct
 )
+:after_node
 
 rem ---------- 2. ESP-IDF (optional, for C2 builds) ----------
 echo.
@@ -218,6 +225,50 @@ echo   Then open http://localhost:8787
 echo.
 pause
 exit /b 0
+
+rem ============================================================
+rem  Subroutine: direct download of Node.js LTS (no winget required)
+rem  Resolves the newest LTS version from nodejs.org index.json,
+rem  downloads the win-x64 zip, extracts it under
+rem  %LOCALAPPDATA%\Programs\node-<ver>-win-x64 and adds that folder
+rem  to the user PATH (also prepends it to this session's PATH so the
+rem  summary below can verify node immediately).
+rem ============================================================
+:install_node_direct
+if not exist "%LOCALAPPDATA%\Programs" mkdir "%LOCALAPPDATA%\Programs" >nul 2>nul
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; " ^
+  "try { " ^
+  "  $j = Invoke-RestMethod -Uri 'https://nodejs.org/dist/index.json' -UseBasicParsing; " ^
+  "  $ver = ($j | Where-Object { $_.lts } | Select-Object -First 1).version; " ^
+  "  if (-not $ver) { Write-Host '  [FAIL] could not resolve latest LTS version'; exit 1 } " ^
+  "  $nodeDir = Join-Path $env:LOCALAPPDATA ('Programs\node-' + $ver + '-win-x64'); " ^
+  "  Write-Host ('  latest LTS: ' + $ver); " ^
+  "  if (-not (Test-Path (Join-Path $nodeDir 'node.exe'))) { " ^
+  "    $zip = Join-Path $env:TEMP ('node-' + $ver + '-win-x64.zip'); " ^
+  "    Invoke-WebRequest -Uri ('https://nodejs.org/dist/' + $ver + '/node-' + $ver + '-win-x64.zip') -OutFile $zip -UseBasicParsing; " ^
+  "    Expand-Archive -Path $zip -DestinationPath (Join-Path $env:LOCALAPPDATA 'Programs') -Force; " ^
+  "    Remove-Item $zip -Force -ErrorAction SilentlyContinue; " ^
+  "  } " ^
+  "  if (-not (Test-Path (Join-Path $nodeDir 'node.exe'))) { Write-Host '  [FAIL] node.exe missing after extract'; exit 1 } " ^
+  "  Write-Host ('  node.exe: ' + (Join-Path $nodeDir 'node.exe')); " ^
+  "  $userPath = [Environment]::GetEnvironmentVariable('Path','User'); " ^
+  "  if (-not $userPath) { $userPath = '' } " ^
+  "  if (-not (($userPath -split ';') -contains $nodeDir)) { " ^
+  "    [Environment]::SetEnvironmentVariable('Path', ($userPath.TrimEnd(';') + ';' + $nodeDir), 'User'); " ^
+  "    Write-Host '  added to user PATH (new terminal required)'; " ^
+  "  } else { Write-Host '  already in user PATH'; } " ^
+  "} catch { " ^
+  "  Write-Host ('  [FAIL] ' + $_.Exception.Message); " ^
+  "  exit 1 " ^
+  "}"
+if not "!errorlevel!"=="0" goto node_direct_failed
+exit /b 0
+
+:node_direct_failed
+echo   [FAIL] Node.js download/install failed. Install it manually from:
+echo          https://nodejs.org
+exit /b 1
 
 rem ============================================================
 rem  Subroutine: direct download of arduino-cli
