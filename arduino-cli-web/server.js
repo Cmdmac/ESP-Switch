@@ -136,10 +136,22 @@ function scanIdfVenv(idfDir) {
     console.log('[IDF] IDF_PYTHON_ENV_PATH 失效（' + d + '），回退磁盘扫描 ' + path.join(os.homedir(), '.espressif', 'python_env'));
   }
   const prefix = idfPrefix(idfDir);
+  // 候选 python_env 根：
+  //   - IDF_TOOLS_PATH/python_env（官方安装器：D:\Espressif\python_env）
+  //   - ~/.espressif/python_env（eim / install.sh 布局）
+  //   - 从 IDF_DIR 逐级上溯找到的 python_env（覆盖 IDF_TOOLS_PATH 未设置、
+  //     例如双击 start.bat 启动 server 时环境变量缺失的情况：
+  //     <root>/frameworks/vX.Y.Z/esp-idf -> <root>/python_env）
   const roots = [
     process.env.IDF_TOOLS_PATH && path.join(process.env.IDF_TOOLS_PATH, 'python_env'),
     path.join(os.homedir(), '.espressif', 'python_env'),
   ].filter(Boolean);
+  let up = idfDir;
+  for (let i = 0; i < 4; i++) {
+    up = path.dirname(up);
+    if (!up || up === path.dirname(up)) break;
+    roots.push(path.join(up, 'python_env'));
+  }
   for (const root of roots) {
     let dirs; try { dirs = fs.readdirSync(root); } catch (_) { continue; }
     const cands = dirs.filter(d => d.startsWith(prefix + '_py') && d.endsWith('_env')).sort();
@@ -213,7 +225,16 @@ const IDF_VENV_PY = IDF_VENV_INFO ? IDF_VENV_INFO.py : path.join(IDF_VENV_BIN, i
 // 改为：直接用校验有效的 venv python 执行 idf_tools.py export，消费其输出
 // （Linux/macOS: eval bash 格式；Windows: --format key-value 逐行解析，见下方）。
 // 这样 IDF 环境完全由 venv（已校验 click）决定，系统 python 版本无关。
-function idfShell(innerCmd, venv) {
+function idfShell(innerCmd, venv = IDF_VENV_INFO) {
+  // 防御：调用点漏传第二参数时回退到启动时解析好的 venv（monitor / C2 flash 两处
+  // 历史上漏传，直接 venv.dir 抛 TypeError 把 server 打挂）；仍拿不到就返回一条
+  // 只打印错误的命令，绝不抛异常。
+  if (!venv) {
+    const msg = '[IDF] 未找到可用的 IDF python venv；请检查 IDF 安装或重跑安装脚本重建 venv';
+    return isWin()
+      ? `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; Write-Host "${msg}"; exit 9`
+      : `echo "${msg}"; exit 9`;
+  }
   const vdir = venv.dir, vbin = venv.bin, vpy = venv.py;
   if (isWin()) {
     // 清除 MSYS 环境（若 server 从 Git Bash 启动，子进程会继承 MSYSTEM 与
@@ -1091,8 +1112,21 @@ const server = http.createServer((req, res) => {
   res.end('not found');
 });
 
+// 兜底：任何未捕获异常都不应打死长期运行的 web 控制台（例如某请求路径的参数处理
+// 出问题时），记录后继续服务；子进程异常由各自的事件处理器负责。
+process.on('uncaughtException', (e) => {
+  console.error('[FATAL-GUARD] 未捕获异常（已忽略，服务继续）：', (e && e.stack) || e);
+});
+process.on('unhandledRejection', (r) => {
+  console.error('[FATAL-GUARD] 未处理的 Promise 拒绝（已忽略）：', (r && r.stack) || r);
+});
+
 server.listen(PORT, '0.0.0.0', () => {
   console.log('ESP-Switch 网页控制台已启动: http://localhost:' + PORT);
-  console.log('arduino-cli: ' + CLI + ' | IDF: ' + IDF_DIR + ' | venv: ' + IDF_VENV);
+  console.log('arduino-cli: ' + CLI + ' | IDF: ' + IDF_DIR + ' | venv: ' + (IDF_VENV || '(未解析到)'));
   console.log('sketch: ' + SKETCH_DIR + ' | idf-c2: ' + IDF_C2_DIR);
+  if (!IDF_VENV_INFO) {
+    console.log('[WARN] 未解析到可用的 IDF python venv：C2 构建/刷写会失败。');
+    console.log('[WARN] 已扫过：IDF_TOOLS_PATH\\python_env、~/.espressif\\python_env、IDF 目录上溯的 python_env。');
+  }
 });
