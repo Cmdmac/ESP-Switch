@@ -78,9 +78,14 @@ assert failed: __esp_system_init_fn_init_flash   -> 重启循环
 | 2MB | `idf-c2/sdkconfig.defaults.2mb` | `partitions-2mb.csv`（单 factory 1.94MB） | ❌ 不支持（空间装不下双 app 分区）→ 用串口烧写 |
 | 4MB | `idf-c2/sdkconfig.defaults.4mb` | `partitions.csv`（factory + ota_0 + ota_1 各 1.25MB） | ✅ 支持 |
 
-- 在 `arduino-cli-web/server.js` 的 **`C2_BOARDS[].flash`** 里按实际硬件填 `'2mb'` / `'4mb'`；构建时会自动叠加对应 `sdkconfig.defaults.<flash>`，并把 `sdkconfig` 按板型隔离（`build/<BOARD>/sdkconfig`）。
+- **在网页 C2 页的「Flash 大小」下拉里选** `2MB` / `4MB`：构建与烧录都会按所选值套用对应的
+  `sdkconfig.defaults.<flash>` 与分区表（`-D SDKCONFIG_DEFAULTS` + 环境变量双注入，sdkconfig 隔离在
+  `build/<板型>/sdkconfig`）。切换板型时下拉会自动切到该板型的预设值，仍可手动改。
+  命令行/无网页时也可改 `arduino-cli-web/server.js` 的 **`C2_BOARDS[].flash`**（作为下拉的默认值）。
 - 不确定实际大小？用 esptool 查：`esptool.py -p COM33 flash_id`（看 `Detected flash size`）。
-- 改了 `flash` 字段后重新构建即可：脚本会自动删除与当前配置不符的旧 `sdkconfig`（sdkconfig 是"粘性"的，不删不会生效），首次切换会全量重编。
+- **切换 flash 后重新构建会全量重编**：脚本会自动删除与当前配置不符的旧 `sdkconfig` / `CMakeCache.txt`（二者都是"粘性"的，不删不生效）。
+- 每次构建日志开头会打印 `[配置] <板型> → Flash=… ｜分区表=… ｜sdkconfig=…`，构建结束还会**自检**
+  sdkconfig 的实际 flash/分区表是否与选择一致，不符时直接给出修复建议——**看不到 `[配置]` 这行说明 server 跑的是旧代码，需重启**。
 - 无 OTA 分区的板：固件启动时会打印 `[OTA] 网页升级不可用`，网页的「升级」入口自动隐藏并提示改用串口烧写（`/api/status` 的 `ota` 字段）。
 
 ### 网页控制台（推荐）

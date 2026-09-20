@@ -357,19 +357,27 @@ function idfBuildDirFor(board) {
   return path.join(IDF_C2_DIR, 'build', (board && isValidC2Board(board)) ? board : 'BOARD_ESP32C2_SWITCH_NANO');
 }
 
-// 板型 flash 大小：'2mb' | '4mb'（见 C2_BOARDS[].flash，缺省 4mb）
+// 板型预设 flash 大小：'2mb' | '4mb'（见 C2_BOARDS[].flash，缺省 4mb）。
+// 网页上的「Flash 大小」下拉可覆盖它（烧不同硬件的板时无需改代码）。
 function idfFlashSize(board) {
   const b = C2_BOARDS.find(x => x.macro === board);
   return (b && b.flash) || '4mb';
 }
 
-// C2 构建/烧写的 sdkconfig 配置（按板型）：
+// 解析请求里的 flash 参数：只接受 '2mb' / '4mb'，其余（缺省/非法）回落到板型预设值。
+function parseFlashParam(v, board) {
+  const s = String(v || '').toLowerCase();
+  if (s === '2mb' || s === '4mb') return s;
+  return idfFlashSize(board);
+}
+
+// C2 构建/烧写的 sdkconfig 配置（按板型 + 可覆盖的 flash 大小）：
 //   defaults  —— 公共 defaults + 按 flash 大小的叠加文件（SDKCONFIG_DEFAULTS 分号分隔，
 //                后者覆盖前者）。2MB 用 partitions-2mb.csv（单 factory、无 OTA），
 //                4MB 用 partitions.csv（双 OTA）。
 //   sdkconfig —— 每板型独立输出路径（SDKCONFIG），避免 2MB/4MB 板的配置互相"粘住"。
-function idfCfgFor(board) {
-  const flash = idfFlashSize(board);
+function idfCfgFor(board, flashOverride) {
+  const flash = parseFlashParam(flashOverride, board);
   return {
     flash,
     defaults: `sdkconfig.defaults;sdkconfig.defaults.${flash}`,
@@ -378,12 +386,12 @@ function idfCfgFor(board) {
   };
 }
 
-// 校验该板型构建目录里的 sdkconfig 是否真的按板型 flash 配置生成。
+// 校验该板型构建目录里的 sdkconfig 是否真的按所选 flash 配置生成。
 // 覆盖两类坑：① server 未重启（旧进程不注入 SDKCONFIG_DEFAULTS，会用默认 2MB flash +
 // 默认 partitions.csv，出现 "Partitions tables occupies 3.8MB ... does not fit in 2MB"）；
 // ② sdkconfig / CMake 缓存粘住旧配置。返回 null 表示正常，否则返回原因。
-function diagnoseIdfConfig(board) {
-  const cfg = idfCfgFor(board);
+function diagnoseIdfConfig(board, flashOverride) {
+  const cfg = idfCfgFor(board, flashOverride);
   if (!fs.existsSync(cfg.sdkconfig)) {
     return `未找到 sdkconfig（${cfg.sdkconfig}）——本次配置可能未按板型注入`;
   }
@@ -402,17 +410,19 @@ function diagnoseIdfConfig(board) {
 
 // sdkconfig 与 CMake 缓存都是"粘性"的：改了板型的 flash 设置后必须清掉才能生效。
 //   - sdkconfig：已存在的键不会被 defaults 覆盖 → 与期望配置不符时删除，让 set-target 重建
-//   - CMakeCache.txt：记录了上次配置的 SDKCONFIG 路径 → 不符时整个 build 目录删除（全量重建），
-//     否则 idf.py 会沿用旧缓存继续按 4MB 编译（出现"改了 flash 但烧出来还是崩溃"）
-function ensureIdfSdkconfig(board) {
-  const cfg = idfCfgFor(board);
+//   - CMakeCache.txt：记录了上次配置的 SDKCONFIG 路径与 SDKCONFIG_DEFAULTS（含 flash 叠加
+//     文件名）→ 任一不符时整个 build 目录删除（全量重建），否则 idf.py 会沿用旧缓存继续按
+//     4MB 编译（出现"改了 flash 但烧出来还是崩溃"）
+function ensureIdfSdkconfig(board, flashOverride) {
+  const cfg = idfCfgFor(board, flashOverride);
   const bdir = idfBuildDirFor(board);
   const norm = (s) => String(s).replace(/\\/g, '/');
   const cacheFile = path.join(bdir, 'CMakeCache.txt');
   if (fs.existsSync(cacheFile)) {
     let c = '';
     try { c = fs.readFileSync(cacheFile, 'utf8'); } catch (_) { c = ''; }
-    if (c && !norm(c).includes(norm(cfg.sdkconfig))) {
+    const nc = norm(c);
+    if (c && (!nc.includes(norm(cfg.sdkconfig)) || !nc.includes('sdkconfig.defaults.' + cfg.flash))) {
       try { fs.rmSync(bdir, { recursive: true, force: true }); } catch (_) {}
       return;
     }
@@ -816,13 +826,13 @@ function ensureArduinoComponent() {
 // 再初始化 IDF 环境后在 idf-c2 目录跑构建/烧录。IDF_C2_BOARD 通过 env 注入。
 // Windows 用 PowerShell 执行（ESP-IDF 官方仅支持 cmd/PowerShell，bash 会被 MSYS 检测拒绝），
 // macOS/Linux 用 bash。
-function runIdfStream(res, innerCmd, label, board) {
+function runIdfStream(res, innerCmd, label, board, flashOverride) {
   sseHeaders(res);
   sseSend(res, 'start', { label, cli: 'idf.py', args: innerCmd });
-  // 打印本次生效的 flash 配置（便于一眼确认按板型注入是否生效；看不到这行说明 server
-  // 跑的还是旧代码，需重启）
+  // 打印本次生效的 flash 配置（便于一眼确认按板型/下拉选择注入是否生效；看不到这行说明
+  // server 跑的还是旧代码，需重启）
   if (board) {
-    const c = idfCfgFor(board);
+    const c = idfCfgFor(board, flashOverride);
     sseSend(res, 'sys', `[配置] ${board} → Flash=${c.flash}｜分区表=${c.partition}｜sdkconfig=${c.sdkconfig}`);
   }
 
@@ -836,7 +846,7 @@ function runIdfStream(res, innerCmd, label, board) {
 
   // 实际跑构建（venv 已就绪）
   const startBuild = (venv) => {
-    const shell = idfShell(innerCmd, venv, board ? idfCfgFor(board) : null);
+    const shell = idfShell(innerCmd, venv, board ? idfCfgFor(board, flashOverride) : null);
     const env = Object.assign({}, process.env, { IDF_C2_BOARD: board });
     let child;
     try {
@@ -867,7 +877,7 @@ function runIdfStream(res, innerCmd, label, board) {
       // 自检：无论成败都核对 sdkconfig 是否按板型 flash 生成（能直接点出"配置没注入"这类
       // 会烧出启动即崩固件的隐患）
       if (board) {
-        const bad = diagnoseIdfConfig(board);
+        const bad = diagnoseIdfConfig(board, flashOverride);
         if (bad) sseSend(res, 'err', '⚠ flash 配置自检未通过：' + bad);
       }
       if (code === 0) {
@@ -1086,14 +1096,16 @@ const server = http.createServer((req, res) => {
     const target = 'esp32c2';
     // 按板型分构建目录：build/<BOARD_XXX>，切换板型互不覆盖
     const bdir = idfBuildDirFor(board);
+    const flash = url.searchParams.get('flash') || '';   // 网页「Flash 大小」下拉（2mb/4mb），缺省用板型预设
     // 上次失败可能留下非 CMake 的残留目录，先清理避免 set-target fullclean 报错
     cleanStaleIdfBuildDir(board);
-    // 板型 flash 配置变了（2MB <-> 4MB）时清掉粘住的 sdkconfig，让 set-target 按新 defaults 重建
-    ensureIdfSdkconfig(board);
-    // 按板型注入 flash 配置：SDKCONFIG_DEFAULTS（公共 defaults + 按 flash 叠加）与独立
-    // SDKCONFIG 路径。除了 idfShell 里设的同名环境变量，这里再用 -D 传 CMake 变量
+    // flash 配置变了（含 2MB <-> 4MB 切换）时清掉粘住的 sdkconfig / build 缓存
+    ensureIdfSdkconfig(board, flash);
+    // 按板型 + 所选 flash 注入配置：SDKCONFIG_DEFAULTS（公共 defaults + 按 flash 叠加）与
+    // 独立 SDKCONFIG 路径。除了 idfShell 里设的同名环境变量，这里再用 -D 传 CMake 变量
     // （IDF project.cmake 优先读 CMake 变量）做双保险。
-    const cfgD = `-D SDKCONFIG_DEFAULTS="${idfCfgFor(board).defaults}" -D SDKCONFIG="${idfCfgFor(board).sdkconfig}"`;
+    const c2cfg = idfCfgFor(board, flash);
+    const cfgD = `-D SDKCONFIG_DEFAULTS="${c2cfg.defaults}" -D SDKCONFIG="${c2cfg.sdkconfig}"`;
     const bflag = `idf.py -B "${bdir}" ${cfgD}`;
     const idfCmd = action === 'flash' ? `${bflag} -p "${port}" flash` : `${bflag} build`;
     // PowerShell 5.1 不支持 &&（PS7+ 语法），Windows 用 $LASTEXITCODE 条件执行；mac/Linux 保持 &&
@@ -1102,7 +1114,7 @@ const server = http.createServer((req, res) => {
       const setCmd = `${bflag} set-target ${target}`;
       inner = isWin() ? `${setCmd}; if ($LASTEXITCODE -eq 0) { ${idfCmd} }` : `${setCmd} && ${idfCmd}`;
     }
-    runIdfStream(res, inner, (action === 'flash' ? 'C2 构建并烧录' : 'C2 构建'), board);
+    runIdfStream(res, inner, (action === 'flash' ? 'C2 构建并烧录' : 'C2 构建'), board, flash);
     return;
   }
 
@@ -1198,9 +1210,10 @@ const server = http.createServer((req, res) => {
       if (!isValidC2Board(board)) { res.writeHead(400); res.end('bad board'); return; }
       const bdir = idfBuildDirFor(board);
       if (!fs.existsSync(bdir) || !collectIdfFirmware(board).length) { res.writeHead(404); res.end('no artifacts'); return; }
-      // 同样按板型注入 flash 配置（-D 双保险，与环境变量一致），否则 idf.py flash 会
-      // 用错分区表/参数烧写
-      const fcfgD = `-D SDKCONFIG_DEFAULTS="${idfCfgFor(board).defaults}" -D SDKCONFIG="${idfCfgFor(board).sdkconfig}"`;
+      // 同样按板型 + flash 参数注入配置（-D 双保险，与环境变量一致），否则 idf.py flash
+      // 会读错 sdkconfig / 用错分区表参数烧写
+      const fflash = url.searchParams.get('flash') || '';
+      const fcfgD = (() => { const c = idfCfgFor(board, fflash); return `-D SDKCONFIG_DEFAULTS="${c.defaults}" -D SDKCONFIG="${c.sdkconfig}"`; })();
       const fbflag = `idf.py -B "${bdir}" ${fcfgD}`;
       let flashCmd = `${fbflag} -p "${port}" flash`;
       if (erase) {
@@ -1212,7 +1225,7 @@ const server = http.createServer((req, res) => {
       }
       // 传未包装的命令：runIdfStream 内部统一用 idfShell 包装（含 venv / 按板型 sdkconfig），
       // 避免此处再包一层导致嵌套。
-      runIdfStream(res, flashCmd, (erase ? '擦除+烧写 ' : '烧写 ') + board, board);
+      runIdfStream(res, flashCmd, (erase ? '擦除+烧写 ' : '烧写 ') + board, board, fflash);
     } else {
       res.writeHead(400); res.end('bad type');
     }

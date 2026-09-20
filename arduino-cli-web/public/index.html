@@ -165,6 +165,13 @@
         <select id="idfboard"></select>
       </div>
       <div class="field">
+        <label>Flash 大小</label>
+        <select id="idfflash" title="必须与芯片实际 flash 一致：2MB 用单分区表（无 OTA），4MB 用双分区表（支持网页 OTA）。烧错会启动即崩。">
+          <option value="2mb">2MB（单分区 · 无 OTA）</option>
+          <option value="4mb">4MB（双分区 · 支持 OTA）</option>
+        </select>
+      </div>
+      <div class="field">
         <label>烧录端口</label>
         <select id="idfport"></select>
       </div>
@@ -228,6 +235,7 @@
 
 <script>
 const $ = id => document.getElementById(id);
+const idfFlashMap = {};   // C2 板型 → 预设 flash 大小（'2mb'/'4mb'），loadMeta 时填充
 const logEl = $('log');
 let monitorES = null;   // 当前监视的 EventSource
 let busy = false;       // 编译/上传进行中
@@ -287,6 +295,9 @@ async function loadMeta() {
     $('idfboard').innerHTML = c.boards.map(x =>
       `<option value="${x.macro}" data-macro="${x.macro}" data-name="${x.name}" data-flash="${x.flash || '4mb'}">${x.name} · ${(x.flash || '4mb').toUpperCase()} Flash${(x.flash === '2mb') ? '（无 OTA）' : ''}</option>`
     ).join('');
+    // 板型 → 预设 flash 映射（构建产物 Tab 的 C2 刷写按钮按此带 flash 参数）
+    c.boards.forEach(x => { idfFlashMap[x.macro] = x.flash || '4mb'; });
+    syncIdfFlashDefault();
   } catch(e) {}
 }
 
@@ -454,6 +465,24 @@ function idfBoardMacro() {
   const o = $('idfboard').selectedOptions[0];
   return o ? (o.dataset.macro || o.value) : '';
 }
+// 当前选择的 C2 flash 大小（'2mb' / '4mb'）：决定用哪套 sdkconfig 与分区表，
+// 必须与芯片实际 flash 一致（2MB 板无 OTA 分区）。构建/烧录时随请求带给后端。
+function idfFlashSel() {
+  const el = $('idfflash');
+  return (el && el.value) ? el.value : '4mb';
+}
+// 切换板型时把 Flash 下拉同步为该板型的预设值（之后仍可手动改）
+function syncIdfFlashDefault() {
+  const o = $('idfboard').selectedOptions[0];
+  const el = $('idfflash');
+  if (o && el && o.dataset.flash) el.value = o.dataset.flash;
+}
+$('idfboard').addEventListener('change', syncIdfFlashDefault);
+$('idfflash').addEventListener('change', () => {
+  appendIdf('sys', '[配置] Flash 设为 ' + idfFlashSel() + '（' +
+    (idfFlashSel() === '2mb' ? '单分区表 partitions-2mb.csv，无 OTA' : '双分区表 partitions.csv，支持网页 OTA') +
+    '）—— 请确认与芯片实际容量一致');
+});
 function setIdfBusy(v) {
   idfBusy = v;
   $('btnIdfBuild').disabled = v;
@@ -495,7 +524,7 @@ $('btnIdfBuild').onclick = () => {
   setIdfBusy(true);
   const board = idfBoardMacro();
   const settarget = $('idfsettarget').checked ? '1' : '0';
-  runIdfStream(`/api/stream/idfbuild?board=${encodeURIComponent(board)}&action=build&settarget=${settarget}`, 'C2 构建', null);
+  runIdfStream(`/api/stream/idfbuild?board=${encodeURIComponent(board)}&action=build&settarget=${settarget}&flash=${idfFlashSel()}`, 'C2 构建', null);
 };
 $('btnIdfFlash').onclick = () => {
   if (idfBusy) return;
@@ -504,7 +533,7 @@ $('btnIdfFlash').onclick = () => {
   setIdfBusy(true);
   const board = idfBoardMacro();
   const settarget = $('idfsettarget').checked ? '1' : '0';
-  runIdfStream(`/api/stream/idfbuild?board=${encodeURIComponent(board)}&action=flash&port=${encodeURIComponent(port)}&settarget=${settarget}`, 'C2 构建并烧录', null);
+  runIdfStream(`/api/stream/idfbuild?board=${encodeURIComponent(board)}&action=flash&port=${encodeURIComponent(port)}&settarget=${settarget}&flash=${idfFlashSel()}`, 'C2 构建并烧录', null);
 };
 $('btnIdfClear').onclick = () => { idfLogEl.innerHTML = ''; };
 
@@ -632,7 +661,11 @@ function flashArtifact(btn) {
   const erase = $('eraseFirst') && $('eraseFirst').checked ? 1 : 0;   // 全新刷写：先整片擦除（含 NVS）
   appendArt('sys', '▶ ' + (erase ? '擦除+烧写 ' : '烧写 ') + dname + ' → ' + bname + ' 开始…');
   $('artrunlabel').textContent = erase ? '（擦除中…）' : '（烧写中…）';
-  const params = `type=${encodeURIComponent(type)}&fqbn=${encodeURIComponent(fqbn)}&board=${encodeURIComponent(board)}&port=${encodeURIComponent(port)}&erase=${erase}`;
+  // C2（IDF）按该板型预设 flash 带参数：决定 flash 大小/分区表，烧错会启动即崩
+  const flash = (type === 'idf') ? (idfFlashMap[board] || '4mb') : '';
+  const params = `type=${encodeURIComponent(type)}&fqbn=${encodeURIComponent(fqbn)}&board=${encodeURIComponent(board)}&port=${encodeURIComponent(port)}&erase=${erase}`
+    + (flash ? `&flash=${encodeURIComponent(flash)}` : '');
+  if (type === 'idf') appendArt('sys', '[配置] Flash=' + flash + '（' + (flash === '2mb' ? 'partitions-2mb.csv，无 OTA' : 'partitions.csv，支持 OTA') + '）');
   const es = new EventSource('/api/stream/flash?' + params);
   es.addEventListener('start', e => appendArt('sys', 'CLI: ' + JSON.parse(e.data).cli));
   es.addEventListener('out', e => appendArt('out', JSON.parse(e.data)));

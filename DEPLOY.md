@@ -137,9 +137,11 @@ smaller than the size in the binary image header(4096k)` + assert 重启）：
 | 2MB | `idf-c2/sdkconfig.defaults.2mb` | `partitions-2mb.csv`（单 factory） | ❌ 用串口烧写 |
 | 4MB | `idf-c2/sdkconfig.defaults.4mb` | `partitions.csv`（双 OTA） | ✅ |
 
-- 按实际硬件在 `arduino-cli-web/server.js` 的 `C2_BOARDS[].flash` 填 `'2mb'` / `'4mb'`；
-  构建时自动叠加对应 defaults 并把 sdkconfig 隔离到 `idf-c2/build/<BOARD>/sdkconfig`。
-- 改了 `flash` 后重跑构建即可：脚本会自动删除与当前配置不符的旧 sdkconfig 再重建（首次切换全量重编）。
+- **网页 C2 页的「Flash 大小」下拉**里选 `2MB` / `4MB` 即可（构建与烧录都按所选值套用对应
+  defaults 与分区表，sdkconfig 隔离到 `idf-c2/build/<板型>/sdkconfig`）；切换板型时自动带出该板型预设值。
+- 无网页时改 `arduino-cli-web/server.js` 的 `C2_BOARDS[].flash`（作为下拉默认值）。
+- 切换 flash 后重新构建会全量重编（脚本自动清理不符的旧 sdkconfig / CMakeCache，二者是"粘性"的）。
+- 构建日志开头会打印 `[配置] … Flash=… ｜分区表=…`，结束时会自检实际 sdkconfig；**看不到这行 = server 未重启**。
 - 查实际大小：`esptool.py -p COM33 flash_id`。
 
 `idf-c2/sdkconfig.defaults` 是**公共**配置（target / arduino 组件 / 栈大小等）；
