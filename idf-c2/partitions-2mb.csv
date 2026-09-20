@@ -1,0 +1,15 @@
+﻿# ESP32-C2 分区表（2MB Flash，单 app 分区、无 OTA）
+# 适用：芯片实际 flash 为 2MB 的 C2 板（esp32c2 / ESP8684）。若固件按 4MB 分区烧到
+# 2MB 芯片上，启动时 spi_flash 会报 "Detected size(2048k) smaller than the size in the
+# binary image header(4096k)" 并 assert 崩溃重启 —— 这类板务必用本分区表。
+#
+# 注意：
+#  - 无 otadata / ota_0 / ota_1：**网页 OTA 不可用**（2MB 装不下双 app 分区：
+#    当前 app 固件约 952KB，两个 app 分区各需 ≥1MB，加上 nvs 等已超 2MB）。
+#  - 更新固件请用 USB/串口烧写（网页控制台 Tab2 的「构建并烧录」或 Tab3 刷写）。
+#  - app 分区 64KB(0x10000) 对齐；data 分区 4KB 对齐。
+#  - 当前 app 约 952KB，factory 给 0x1F0000(1.94MB)，剩余空间充裕（可容纳后续功能增长）。
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x6000,
+phy_init, data, phy,     0xf000,   0x1000,
+factory,  app,  factory, 0x10000,  0x1F0000,

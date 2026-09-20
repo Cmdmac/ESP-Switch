@@ -127,8 +127,25 @@ const IDF_C2_DIR = '<仓库>/idf-c2';
 
 > ⚠️ 若用 `IDF_PATH` 指向 IDF，请确认版本在 arduino-esp32 支持范围 [5.3, 6.2) 内；版本不符时用 `ESP_SWITCH_IDF_DIR` 显式覆盖。venv 前缀自动从该 IDF 的 `version.cmake` 推导（或读环境 `IDF_PYTHON_ENV_PATH`），一般无需手工指定；特殊情况可用 `ESP_SWITCH_IDF_VENV_PREFIX` 覆盖。
 
-`idf-c2/sdkconfig.defaults` 默认 4MB flash + 双 OTA 分区；若目标板 flash 不是 4MB 需改
-`CONFIG_ESPTOOLPY_FLASHSIZE_*` 与 `partitions.csv`（键名是 `FLASHSIZE`，无 `_SIZE`，写错会被静默忽略退回 2MB）。
+### C2 板 Flash 大小（2MB / 4MB）
+
+C2 板有 2MB 与 4MB 两种硬件，flash 配置与分区表必须匹配，否则启动即崩（`Detected size(2048k)
+smaller than the size in the binary image header(4096k)` + assert 重启）：
+
+| Flash | sdkconfig 叠加文件 | 分区表 | 网页 OTA |
+|---|---|---|---|
+| 2MB | `idf-c2/sdkconfig.defaults.2mb` | `partitions-2mb.csv`（单 factory） | ❌ 用串口烧写 |
+| 4MB | `idf-c2/sdkconfig.defaults.4mb` | `partitions.csv`（双 OTA） | ✅ |
+
+- 按实际硬件在 `arduino-cli-web/server.js` 的 `C2_BOARDS[].flash` 填 `'2mb'` / `'4mb'`；
+  构建时自动叠加对应 defaults 并把 sdkconfig 隔离到 `idf-c2/build/<BOARD>/sdkconfig`。
+- 改了 `flash` 后重跑构建即可：脚本会自动删除与当前配置不符的旧 sdkconfig 再重建（首次切换全量重编）。
+- 查实际大小：`esptool.py -p COM33 flash_id`。
+
+`idf-c2/sdkconfig.defaults` 是**公共**配置（target / arduino 组件 / 栈大小等）；
+flash 大小与分区表由 `sdkconfig.defaults.<2mb|4mb>` 按板型叠加（见上一节），改板型只需改
+`server.js` 的 `C2_BOARDS[].flash`，不必动 sdkconfig。
+（键名是 `FLASHSIZE`，无 `_SIZE`，写错会被 IDF 静默忽略、退回默认 2MB。）
 
 ## 7. 验证
 
@@ -139,7 +156,14 @@ arduino-cli compile --fqbn esp32:esp32:esp32c3 ESP32_Light_Switch
 # Tab2 链路（C2 编译冒烟）
 cd idf-c2
 . ~/esp/esp-idf/export.sh
+# 手动命令行需自己带 flash 配置（网页控制台会自动注入这两项）：
+#   export SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.2mb"
+#   export SDKCONFIG="$PWD/build/BOARD_ESP32C2_SWITCH_NANO/sdkconfig"
 idf.py set-target esp32c2 && idf.py -B build/BOARD_ESP32C2_SWITCH_NANO build
+
+# 启动日志里确认 flash/OTA 生效：
+#   I (xx) boot: Partition Table: ...   <- 2MB 板应只有 nvs/phy_init/factory 三项
+#   [OTA] 网页升级不可用（分区表无 OTA 分区，请用串口烧写）
 
 # 网页服务
 cd arduino-cli-web && node server.js    # 打开 http://localhost:8787

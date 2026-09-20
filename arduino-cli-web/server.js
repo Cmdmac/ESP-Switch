@@ -225,10 +225,12 @@ const IDF_VENV_PY = IDF_VENV_INFO ? IDF_VENV_INFO.py : path.join(IDF_VENV_BIN, i
 // 改为：直接用校验有效的 venv python 执行 idf_tools.py export，消费其输出
 // （Linux/macOS: eval bash 格式；Windows: --format key-value 逐行解析，见下方）。
 // 这样 IDF 环境完全由 venv（已校验 click）决定，系统 python 版本无关。
-function idfShell(innerCmd, venv = IDF_VENV_INFO) {
+function idfShell(innerCmd, venv = IDF_VENV_INFO, cfg = null) {
   // 防御：调用点漏传第二参数时回退到启动时解析好的 venv（monitor / C2 flash 两处
   // 历史上漏传，直接 venv.dir 抛 TypeError 把 server 打挂）；仍拿不到就返回一条
   // 只打印错误的命令，绝不抛异常。
+  // cfg（可选）：idfCfgFor(board) 的结果，用于按板型注入 SDKCONFIG_DEFAULTS / SDKCONFIG
+  // （2MB 与 4MB 板用不同 flash 配置与分区表，且各自独立 sdkconfig）。
   if (!venv) {
     const msg = '[IDF] 未找到可用的 IDF python venv；请检查 IDF 安装或重跑安装脚本重建 venv';
     return isWin()
@@ -236,11 +238,20 @@ function idfShell(innerCmd, venv = IDF_VENV_INFO) {
       : `echo "${msg}"; exit 9`;
   }
   const vdir = venv.dir, vbin = venv.bin, vpy = venv.py;
+  // SDKCONFIG_DEFAULTS 用相对项目根的路径（idf.py 在 idf-c2 下运行），分号分隔多个文件，
+  // 后面的覆盖前面的；SDKCONFIG 用绝对路径按板型隔离，避免 2MB/4MB 配置互相粘住。
+  const cfgEnvWin = cfg
+    ? `$env:SDKCONFIG_DEFAULTS='${cfg.defaults}'; $env:SDKCONFIG='${cfg.sdkconfig}'; `
+    : '';
+  const cfgEnvNix = cfg
+    ? `export SDKCONFIG_DEFAULTS="${cfg.defaults}"; export SDKCONFIG="${cfg.sdkconfig}"; `
+    : '';
   if (isWin()) {
     // 清除 MSYS 环境（若 server 从 Git Bash 启动，子进程会继承 MSYSTEM 与
     // MSYS 路径，IDF 会拒绝 "MSys/Mingw is not supported"）；并强制 UTF-8 输出，
     // 否则 Windows shell 5.1 以系统代码页(GBK)输出，SSE 按 UTF-8 解码会乱码
-    return `$env:MSYSTEM=$null; $env:MSYS=$null; `
+    return cfgEnvWin
+      + `$env:MSYSTEM=$null; $env:MSYS=$null; `
       + `$env:PATH=($env:PATH -split ';' | Where-Object { $_ -notmatch 'msys|mingw|PortableGit' }) -join ';'; `
       + `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; `
       + `$env:IDF_PATH='${IDF_DIR}'; $env:IDF_PYTHON_ENV_PATH='${vdir}'; `
@@ -260,7 +271,8 @@ function idfShell(innerCmd, venv = IDF_VENV_INFO) {
       + `if (-not (Get-Command idf.py -ErrorAction SilentlyContinue)) { Write-Host "[IDF] export 后仍未找到 idf.py，检查 IDF_PATH=${IDF_DIR} 与 venv=${vdir}"; exit 9 }; `
       + `Set-Location '${IDF_C2_DIR}'; ${innerCmd}`;
   }
-  return `export IDF_PATH="${IDF_DIR}"; export IDF_PYTHON_ENV_PATH="${vdir}"; `
+  return cfgEnvNix
+    + `export IDF_PATH="${IDF_DIR}"; export IDF_PYTHON_ENV_PATH="${vdir}"; `
     + `export IDF_TOOLS_EXPORT_CMD="${IDF_EXPORT}"; export IDF_TOOLS_INSTALL_CMD="${IDF_DIR}/install.sh"; `
     + `export PATH="${vbin}:$PATH"; `
     + `if [ ! -x "${vpy}" ]; then echo "[IDF] venv python 不存在: ${vpy}"; echo "[IDF] 请运行 install.sh 重建: cd ${IDF_DIR} && ./install.sh esp32c2"; exit 9; fi; `
@@ -310,9 +322,14 @@ function isValidBoardMacro(s) {
 // ESP32-C2 子板（ESP-IDF 构建专用）：只在 arduino-cli 路径下编不过的 C2 板，
 // 经 idf-c2 工程（arduino 作为 component）编译。板宏经 IDF_C2_BOARD 环境变量注入。
 const C2_BOARDS = [
-  { macro: 'BOARD_ESP32C2_SWITCH_NANO', name: 'ESP32-C2-Switch-Nano' },
-  { macro: 'BOARD_ESP32C2_SWITCH_DEV',  name: 'ESP32-C2-Switch-Dev' },
-  { macro: 'BOARD_ESP32C2_MODULE',      name: 'ESP32-C2-Module' },
+  // flash：该板型芯片的实际 flash 大小，决定 sdkconfig.defaults.<flash> 与分区表。
+  //   2mb -> partitions-2mb.csv（单 factory，无 OTA）
+  //   4mb -> partitions.csv（factory + ota_0 + ota_1，支持网页 OTA）
+  // 请按**手上硬件实际值**修改（烧错会出现启动即崩：Detected size 2048k smaller than
+  // binary image header 4096k）。查看实际大小：esptool.py -p <COM> flash_id。
+  { macro: 'BOARD_ESP32C2_SWITCH_NANO', name: 'ESP32-C2-Switch-Nano', flash: '2mb' },
+  { macro: 'BOARD_ESP32C2_SWITCH_DEV',  name: 'ESP32-C2-Switch-Dev',  flash: '4mb' },
+  { macro: 'BOARD_ESP32C2_MODULE',      name: 'ESP32-C2-Module',      flash: '4mb' },
 ];
 function isValidC2Board(s) {
   return typeof s === 'string' && /^BOARD_ESP32C2_[A-Z0-9_]+$/.test(s) && s.length < 60;
@@ -338,6 +355,54 @@ function buildDirFor(fqbn, board) {
 // IDF 构建产物目录：按 C2 板型分开（idf.py -B build/<BOARD_XXX>），避免切换板型互相覆盖。
 function idfBuildDirFor(board) {
   return path.join(IDF_C2_DIR, 'build', (board && isValidC2Board(board)) ? board : 'BOARD_ESP32C2_SWITCH_NANO');
+}
+
+// 板型 flash 大小：'2mb' | '4mb'（见 C2_BOARDS[].flash，缺省 4mb）
+function idfFlashSize(board) {
+  const b = C2_BOARDS.find(x => x.macro === board);
+  return (b && b.flash) || '4mb';
+}
+
+// C2 构建/烧写的 sdkconfig 配置（按板型）：
+//   defaults  —— 公共 defaults + 按 flash 大小的叠加文件（SDKCONFIG_DEFAULTS 分号分隔，
+//                后者覆盖前者）。2MB 用 partitions-2mb.csv（单 factory、无 OTA），
+//                4MB 用 partitions.csv（双 OTA）。
+//   sdkconfig —— 每板型独立输出路径（SDKCONFIG），避免 2MB/4MB 板的配置互相"粘住"。
+function idfCfgFor(board) {
+  const flash = idfFlashSize(board);
+  return {
+    flash,
+    defaults: `sdkconfig.defaults;sdkconfig.defaults.${flash}`,
+    sdkconfig: path.join(idfBuildDirFor(board), 'sdkconfig'),
+    partition: flash === '2mb' ? 'partitions-2mb.csv' : 'partitions.csv',
+  };
+}
+
+// sdkconfig 与 CMake 缓存都是"粘性"的：改了板型的 flash 设置后必须清掉才能生效。
+//   - sdkconfig：已存在的键不会被 defaults 覆盖 → 与期望配置不符时删除，让 set-target 重建
+//   - CMakeCache.txt：记录了上次配置的 SDKCONFIG 路径 → 不符时整个 build 目录删除（全量重建），
+//     否则 idf.py 会沿用旧缓存继续按 4MB 编译（出现"改了 flash 但烧出来还是崩溃"）
+function ensureIdfSdkconfig(board) {
+  const cfg = idfCfgFor(board);
+  const bdir = idfBuildDirFor(board);
+  const norm = (s) => String(s).replace(/\\/g, '/');
+  const cacheFile = path.join(bdir, 'CMakeCache.txt');
+  if (fs.existsSync(cacheFile)) {
+    let c = '';
+    try { c = fs.readFileSync(cacheFile, 'utf8'); } catch (_) { c = ''; }
+    if (c && !norm(c).includes(norm(cfg.sdkconfig))) {
+      try { fs.rmSync(bdir, { recursive: true, force: true }); } catch (_) {}
+      return;
+    }
+  }
+  if (!fs.existsSync(cfg.sdkconfig)) return;
+  let txt = '';
+  try { txt = fs.readFileSync(cfg.sdkconfig, 'utf8'); } catch (_) { return; }
+  const wantSize = cfg.flash === '2mb' ? 'CONFIG_ESPTOOLPY_FLASHSIZE_2MB=y' : 'CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y';
+  const wantPart = 'CONFIG_PARTITION_TABLE_FILENAME="' + cfg.partition + '"';
+  if (!txt.includes(wantSize) || !txt.includes(wantPart)) {
+    try { fs.rmSync(cfg.sdkconfig, { force: true }); } catch (_) {}
+  }
 }
 
 // 构建目录若存在但不是合法 CMake 目录（无 CMakeCache.txt，多为上次失败残留），
@@ -743,7 +808,7 @@ function runIdfStream(res, innerCmd, label, board) {
 
   // 实际跑构建（venv 已就绪）
   const startBuild = (venv) => {
-    const shell = idfShell(innerCmd, venv);
+    const shell = idfShell(innerCmd, venv, board ? idfCfgFor(board) : null);
     const env = Object.assign({}, process.env, { IDF_C2_BOARD: board });
     let child;
     try {
@@ -989,6 +1054,8 @@ const server = http.createServer((req, res) => {
     const bdir = idfBuildDirFor(board);
     // 上次失败可能留下非 CMake 的残留目录，先清理避免 set-target fullclean 报错
     cleanStaleIdfBuildDir(board);
+    // 板型 flash 配置变了（2MB <-> 4MB）时清掉粘住的 sdkconfig，让 set-target 按新 defaults 重建
+    ensureIdfSdkconfig(board);
     const idfCmd = action === 'flash' ? `idf.py -B "${bdir}" -p "${port}" flash` : `idf.py -B "${bdir}" build`;
     // PowerShell 5.1 不支持 &&（PS7+ 语法），Windows 用 $LASTEXITCODE 条件执行；mac/Linux 保持 &&
     let inner = idfCmd;
@@ -1026,8 +1093,8 @@ const server = http.createServer((req, res) => {
     const baud = url.searchParams.get('baud') || '115200';
     if (!isValidPort(port)) { res.writeHead(400); res.end('bad port'); return; }
     if (!/^\d{4,7}$/.test(baud)) { res.writeHead(400); res.end('bad baud'); return; }
-    const shell = idfShell(`idf.py -p "${port}" -b ${baud} monitor`);
-    runIdfStream(res, shell, '监视 ' + port, '');
+    // 同样传未包装命令（runIdfStream 内部包装）
+    runIdfStream(res, `idf.py -p "${port}" -b ${baud} monitor`, '监视 ' + port, '');
     return;
   }
 
@@ -1100,8 +1167,9 @@ const server = http.createServer((req, res) => {
           ? `${eraseCmd}; if ($LASTEXITCODE -eq 0) { ${flashCmd} }`
           : `${eraseCmd} && ${flashCmd}`;
       }
-      const shell = idfShell(flashCmd);
-      runIdfStream(res, shell, (erase ? '擦除+烧写 ' : '烧写 ') + board, board);
+      // 传未包装的命令：runIdfStream 内部统一用 idfShell 包装（含 venv / 按板型 sdkconfig），
+      // 避免此处再包一层导致嵌套。
+      runIdfStream(res, flashCmd, (erase ? '擦除+烧写 ' : '烧写 ') + board, board);
     } else {
       res.writeHead(400); res.end('bad type');
     }

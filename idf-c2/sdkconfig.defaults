@@ -22,12 +22,12 @@ CONFIG_ARDUINO_USB_CDC_ON_BOOT=n
 CONFIG_ARDUINO_USB_MODE=n
 
 # OTA 双分区表（配合 WebServer 的 /update 网页升级）
+# 注意：flash 大小与分区表**不在这里**设置 —— C2 板有 2MB / 4MB 两种硬件，
+# 由构建时按板型叠加 sdkconfig.defaults.<2mb|4mb>（见 server.js 的 C2_BOARDS.flash）：
+#   2MB -> sdkconfig.defaults.2mb（单 factory，无 OTA）
+#   4MB -> sdkconfig.defaults.4mb（partitions.csv 双 OTA）
+# 键名是 FLASHSIZE（无 _SIZE），写错会被 IDF 静默忽略、退回默认 2MB。
 CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
-
-# 4MB Flash（ESP32-C2 常见配置）
-# 注意：键名是 FLASHSIZE（无 _SIZE），写错会被 IDF 静默忽略、退回默认 2MB
-CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 
 # 默认开启 NVS（Preferences 持久化依赖）
 CONFIG_NVS_FLASH=y

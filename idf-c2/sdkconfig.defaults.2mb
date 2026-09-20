@@ -1,0 +1,9 @@
+# ESP32-C2 · 2MB Flash 配置（构建时按板型叠加在 sdkconfig.defaults 之后）
+# 适用：芯片实际 flash 为 2MB 的 C2 板（esp32c2 / ESP8684）。
+# 若按 4MB 编译后烧到 2MB 芯片，启动会报
+#   E spi_flash: Detected size(2048k) smaller than the size in the binary image header(4096k)
+#   assert failed: __esp_system_init_fn_init_flash  -> 崩溃重启
+# 分区表：partitions-2mb.csv（单 factory 1.94MB）——**无 OTA**，固件升级走 USB/串口烧写。
+CONFIG_ESPTOOLPY_FLASHSIZE_2MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_FILENAME="partitions-2mb.csv"

@@ -54,8 +54,22 @@
   #include <Preferences.h>
   #include <ESPmDNS.h>
   #include <Update.h>         // 网页 OTA 固件升级
+  #include <esp_ota_ops.h>    // 运行期判断是否存在 OTA 分区（2MB 单分区板不支持网页升级）
   #include <time.h>           // NTP 时间：configTime / getLocalTime / time()
 #endif
+
+// 本固件所在板是否支持网页 OTA（需分区表里有 ota_0/ota_1 + otadata）。
+// 2MB Flash 的 C2 板用 partitions-2mb.csv（单 factory 分区）——空间装不下双 app 分区，
+// 运行期检测到无 OTA 分区时，网页会隐藏升级入口并提示改用串口烧写。
+// ESP8266 无 esp_ota_ops API，保持可用（其分区方案由 Arduino IDE 菜单决定，缺 OTA 时
+// Update.begin 会自行报错）。
+bool otaAvailable = true;
+
+void detectOtaSupport() {
+#ifndef ESP8266
+  otaAvailable = (esp_ota_get_next_update_partition(NULL) != NULL);
+#endif
+}
 
 // ==================== 板型选择（产品板 → 引脚 / 功能开关） ====================
 // 用编译宏选定目标板：在 arduino-cli / PlatformIO 传入 -DBOARD_XXX，
@@ -428,8 +442,15 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
   <div class="tab-content" id="tab-ota">
     <div class="card">
       <div class="label" style="margin-bottom:10px;">固件升级（OTA）</div>
-      <input type="file" id="firmware" accept=".bin" style="width:100%;font-size:0.9rem;margin-bottom:10px;">
-      <button type="button" onclick="uploadFirmware()">选择 .bin 并升级</button>
+      <div id="otaForm">
+        <input type="file" id="firmware" accept=".bin" style="width:100%;font-size:0.9rem;margin-bottom:10px;">
+        <button type="button" onclick="uploadFirmware()">选择 .bin 并升级</button>
+      </div>
+      <div class="note" id="otaUnsupported" style="display:none;margin-top:6px;padding:10px;border:1px solid #e08;color:#c00;background:#fff5f5;border-radius:8px;line-height:1.7;">
+        <b>本板不支持网页升级</b><br>
+        该板 Flash 为 2MB，分区表使用单 app 分区（无 ota_0/ota_1），空间不足无法双分区 OTA。<br>
+        更新固件请用 <b>USB / 串口烧写</b>（浏览器控制台的「构建产物」或「ESP32-C2」页）。
+      </div>
       <div class="note" id="updateStatus"></div>
     </div>
   </div>
@@ -572,6 +593,12 @@ async function refresh() {
     var fv = (d.ver && d.ver.length) ? d.ver : '?';
     $('subtitle').innerText = 'ESP Light Switch · v' + fv;
     if (d.mdns) { _mdnsUrl = 'http://' + d.mdns; if ($('mdnsHint')) $('mdnsHint').innerText = _mdnsUrl; }
+    // 无 OTA 分区的板（2MB 单分区）隐藏升级表单，只显示说明；有 OTA 则保持表单可见
+    if (typeof d.ota === 'boolean') {
+      if ($('otaForm')) $('otaForm').style.display = d.ota ? 'block' : 'none';
+      if ($('otaUnsupported')) $('otaUnsupported').style.display = d.ota ? 'none' : 'block';
+      if ($('tabBtn-ota')) $('tabBtn-ota').innerText = d.ota ? '升级' : '升级(不可用)';
+    }
   } catch(e) {
     $('status').innerText = '连接失败，请检查网络后刷新';
   }
@@ -1056,6 +1083,7 @@ void handleStatus() {
   json += "\"board\":\"" + String(BOARD_NAME) + "\",";
   json += "\"ip\":\"" + currentIP + "\",";
   json += "\"wifiSsid\":\"" + wifiSsid + "\",";
+  json += "\"ota\":" + String(otaAvailable ? "true" : "false") + ",";   // 无 OTA 分区时网页隐藏升级入口
   json += "\"brightnessSup\":" + String(BRIGHTNESS_SUPPORTED) + ",";
   json += "\"ambientSup\":" + String(AMBIENT_SUPPORTED) + ",";
   json += "\"currentSup\":" + String(CURRENT_SUPPORTED) + ",";
@@ -1146,6 +1174,11 @@ void setup() {
   Serial.println("\nESP Light Switch starting...");
   Serial.println("Board: " BOARD_NAME);
 
+  // 检测分区表里是否有 OTA 分区（2MB 单分区板无 OTA，网页会隐藏升级入口）
+  detectOtaSupport();
+  Serial.println(String("[OTA] 网页升级") + (otaAvailable ? "可用（分区表含 ota_0/ota_1 + otadata）"
+                                                          : "不可用（分区表无 OTA 分区，请用串口烧写）"));
+
   if (STATUS_LED_PIN >= 0 && STATUS_LED_PIN != LIGHT_PWM_PIN) {
     pinMode(STATUS_LED_PIN, OUTPUT);
     digitalWrite(STATUS_LED_PIN, LOW);
@@ -1214,6 +1247,11 @@ void setup() {
   // 网页 OTA 升级：接收上传的固件 .bin，写入另一个 OTA 分区，完成后重启
   server.on("/update", HTTP_POST,
     []() {
+      // 无 OTA 分区的板（如 2MB Flash 单 factory 布局）：直接拒绝，避免写入失败/半途损坏
+      if (!otaAvailable) {
+        server.send(503, "text/plain", "本板 Flash 无 OTA 分区（2MB 单分区布局），不支持网页升级；请用 USB/串口烧写");
+        return;
+      }
       // 整个请求体接收完成后的回调
       if (Update.hasError()) {
         server.send(500, "text/plain", "升级失败：" + String(Update.getError()));

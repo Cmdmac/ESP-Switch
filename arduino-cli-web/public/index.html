@@ -282,7 +282,11 @@ async function loadMeta() {
   // C2 boards
   try {
     const c = await (await fetch('/api/idf/boards')).json();
-    $('idfboard').innerHTML = c.boards.map(x => `<option value="${x.macro}" data-macro="${x.macro}">${x.name}</option>`).join('');
+    // 板型名后标注 flash 大小（2MB 板无 OTA 分区，用串口烧写；4MB 板支持网页 OTA）；
+    // data-name 存纯板子名，避免下游用 option 文本拼产物名时带上这些标注。
+    $('idfboard').innerHTML = c.boards.map(x =>
+      `<option value="${x.macro}" data-macro="${x.macro}" data-name="${x.name}" data-flash="${x.flash || '4mb'}">${x.name} · ${(x.flash || '4mb').toUpperCase()} Flash${(x.flash === '2mb') ? '（无 OTA）' : ''}</option>`
+    ).join('');
   } catch(e) {}
 }
 
@@ -401,7 +405,9 @@ function boardNameOf(macro, selectId) {
   const sel = $(selectId);
   if (!sel || !macro) return macro || '';
   const opt = [...sel.options].find(o => o.dataset.macro === macro);
-  return opt ? opt.text : macro;
+  // 优先用 data-name（纯板子名）：option 文本可能带附加标注（如 "· 2MB Flash（无 OTA）"），
+  // 直接拿文本拼产物名/pcb 文件名会带上这些后缀
+  return opt ? (opt.dataset.name || opt.text) : macro;
 }
 // 产物文件名换成板子名：ESP32_Light_Switch.ino.bin -> ESP32C3-Switch.bin
 function prettyFw(name, bname) {

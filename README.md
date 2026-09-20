@@ -64,6 +64,25 @@ ESP 通断器固件，支持网页控制。基于 Arduino 框架，同一份代�
 - **同一份源码、两条编译链**：`ESP32_Light_Switch.ino` 是唯一固件源码（arduino-cli 直接编译）；`idf-c2/main/main.cpp` 是薄壳，`#include` 同一份 `.ino` + 自写 `app_main()`。改固件只改 `.ino`，两边编译都生效。
 - C3/8285 板在 arduino 路径选板后，用 `-DBOARD_XXX` 宏决定引脚/功能（网页控制台自动注入宏）。
 
+### C2 板的 Flash 大小（重要）
+
+C2 板有两种硬件：**2MB** 与 **4MB** flash，两者的 flash 配置与分区表必须匹配，否则启动即崩：
+
+```
+E spi_flash: Detected size(2048k) smaller than the size in the binary image header(4096k). Probe failed.
+assert failed: __esp_system_init_fn_init_flash   -> 重启循环
+```
+
+| Flash | 配置来源 | 分区表 | 网页 OTA |
+|---|---|---|---|
+| 2MB | `idf-c2/sdkconfig.defaults.2mb` | `partitions-2mb.csv`（单 factory 1.94MB） | ❌ 不支持（空间装不下双 app 分区）→ 用串口烧写 |
+| 4MB | `idf-c2/sdkconfig.defaults.4mb` | `partitions.csv`（factory + ota_0 + ota_1 各 1.25MB） | ✅ 支持 |
+
+- 在 `arduino-cli-web/server.js` 的 **`C2_BOARDS[].flash`** 里按实际硬件填 `'2mb'` / `'4mb'`；构建时会自动叠加对应 `sdkconfig.defaults.<flash>`，并把 `sdkconfig` 按板型隔离（`build/<BOARD>/sdkconfig`）。
+- 不确定实际大小？用 esptool 查：`esptool.py -p COM33 flash_id`（看 `Detected flash size`）。
+- 改了 `flash` 字段后重新构建即可：脚本会自动删除与当前配置不符的旧 `sdkconfig`（sdkconfig 是"粘性"的，不删不会生效），首次切换会全量重编。
+- 无 OTA 分区的板：固件启动时会打印 `[OTA] 网页升级不可用`，网页的「升级」入口自动隐藏并提示改用串口烧写（`/api/status` 的 `ota` 字段）。
+
 ### 网页控制台（推荐）
 
 ```bash
@@ -165,16 +184,19 @@ OTA 需要 Flash 上有至少两个 App 分区（factory / ota_0 / ota_1）。
 电流(A) = ADC电压(V) / (Rshunt(Ω) × Gain × 分压比)
 ```
 
-各分支宏定义（固件 `ESP32_Light_Switch.ino` 顶部）：
+各分支宏定义（固件 `ESP32_Light_Switch.ino` 顶部，按 `#ifdef ESP8266` 分两支）：
 
 | 分支 | `SHUNT_RESISTANCE_MILLIOHM` | `CURRENT_SENSE_GAIN` | `CURRENT_SENSE_DIVIDER_RATIO` |
 |---|---|---|---|
-| ESP32 系（C2/C3） | 20 mΩ | 20 | 1/3 |
-| ESP8285 系 | 150 mΩ | 20 | 2/3 |
+| ESP8266 / ESP8285 | 20 mΩ | 20 | 1/3 |
+| ESP32 系（C2/C3） | 150 mΩ | 20 | 2/3 |
 
-> **ESP8285 注意**：其 ADC 量程仅 **0~1.0V**（10 位）。以 150mΩ、增益 20、分压 2/3 计算，满量程可测电流约
-> `1.0 / (0.15 × 20 × 2/3) ≈ 0.5A`。若你的 ESP8285 板电流检测输出超过 1.0V，请调整分流电阻/增益/分压，
-> 使满量程落在 1.0V 以内，并保持上述三个宏与实际电路一致。
+换算（与固件注释一致）：
+
+- **ESP8266/ESP8285**：`电流(A) = V_adc / (0.02 × 20 × 1/3) = V_adc × 7.5`（与 ESPHome 的 `multiply: 7500` 一致）。
+  ADC 量程 0~1.0V，故满量程约 **7.5A**。
+- **ESP32-C2/C3**：`电流(A) = V_adc / (0.15 × 20 × 2/3) = V_adc × 0.5`（GPIO0 前端 R11=100kΩ / R84=200kΩ 分压，V_adc = V_INA180 × 2/3）。
+  以 ADC 满量程约 2.5~3.3V 计，可测约 **1.2~1.6A**。
 
 如果你的板子使用了不同的分流电阻、放大器型号或分压比，请按实际参数修改上述三个宏（`CURRENT_SENSE_DIVIDER_RATIO` 别漏）。
 

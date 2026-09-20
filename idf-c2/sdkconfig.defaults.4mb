@@ -1,0 +1,6 @@
+# ESP32-C2 · 4MB Flash 配置（构建时按板型叠加在 sdkconfig.defaults 之后）
+# 适用：芯片实际 flash 为 4MB 的 C2 板。
+# 分区表：partitions.csv（factory + ota_0 + ota_1，每个 1.25MB）——支持网页 OTA 升级。
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
