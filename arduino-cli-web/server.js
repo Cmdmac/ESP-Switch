@@ -399,11 +399,14 @@ function diagnoseIdfConfig(board, flashOverride) {
   try { txt = fs.readFileSync(cfg.sdkconfig, 'utf8'); } catch (e) { return 'sdkconfig 读取失败: ' + e.message; }
   const wantSize = cfg.flash === '2mb' ? 'CONFIG_ESPTOOLPY_FLASHSIZE_2MB=y' : 'CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y';
   const size = txt.match(/CONFIG_ESPTOOLPY_FLASHSIZE="([^"]+)"/);
-  const part = txt.match(/CONFIG_PARTITION_TABLE_FILENAME="([^"]+)"/);
+  const part = txt.match(/CONFIG_PARTITION_TABLE_FILENAME="([^"]+)"/);          // IDF 派生出的实际生效值
+  const partCustom = txt.match(/CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="([^"]+)"/);  // 我们设置的用户符号
   if (!txt.includes(wantSize) || !part || part[1] !== cfg.partition) {
-    return `实际配置与板型不符（flash=${size ? size[1] : '?'}，分区表=${part ? part[1] : '?'}；`
+    return `实际配置与板型不符（flash=${size ? size[1] : '?'}，分区表=${part ? part[1] : '?'}`
+      + `${partCustom ? '，自定义分区表符号=' + partCustom[1] : ''}；`
       + `期望 flash=${cfg.flash}，分区表=${cfg.partition}）——`
-      + '请确认 server 已重启（只有新代码才会按板型注入 SDKCONFIG_DEFAULTS），然后删除该板型 build 目录重试';
+      + '请确认 server 已重启（只有新代码才会按板型/下拉注入 SDKCONFIG_DEFAULTS），然后删除该板型 build 目录重试'
+      + '（改过 sdkconfig.defaults 时 sdkconfig 不会自动跟随，必须删掉重建）';
   }
   return null;
 }
@@ -431,8 +434,11 @@ function ensureIdfSdkconfig(board, flashOverride) {
   let txt = '';
   try { txt = fs.readFileSync(cfg.sdkconfig, 'utf8'); } catch (_) { return; }
   const wantSize = cfg.flash === '2mb' ? 'CONFIG_ESPTOOLPY_FLASHSIZE_2MB=y' : 'CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y';
+  // 分区表要同时校验"用户可配符号"和 IDF 派生出的实际生效值：
+  // PARTITION_TABLE_CUSTOM_FILENAME 是我们设置的；PARTITION_TABLE_FILENAME 由它派生。
+  const wantPartCustom = 'CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="' + cfg.partition + '"';
   const wantPart = 'CONFIG_PARTITION_TABLE_FILENAME="' + cfg.partition + '"';
-  if (!txt.includes(wantSize) || !txt.includes(wantPart)) {
+  if (!txt.includes(wantSize) || !txt.includes(wantPartCustom) || !txt.includes(wantPart)) {
     try { fs.rmSync(cfg.sdkconfig, { force: true }); } catch (_) {}
   }
 }

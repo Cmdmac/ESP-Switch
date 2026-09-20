@@ -4,6 +4,9 @@
 #   E spi_flash: Detected size(2048k) smaller than the size in the binary image header(4096k)
 #   assert failed: __esp_system_init_fn_init_flash  -> 崩溃重启
 # 分区表：partitions-2mb.csv（单 factory 1.94MB）——**无 OTA**，固件升级走 USB/串口烧写。
+# 注意：必须用 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME（用户可配符号）；
+# CONFIG_PARTITION_TABLE_FILENAME 是 IDF 由它派生出来的只读符号，在这里赋值会被忽略，
+# 症状是 flash 已是 2MB 但分区表仍是 partitions.csv（报 "Partitions tables occupies 3.8MB"）。
 CONFIG_ESPTOOLPY_FLASHSIZE_2MB=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_FILENAME="partitions-2mb.csv"
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-2mb.csv"
