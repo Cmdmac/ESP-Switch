@@ -378,6 +378,28 @@ function idfCfgFor(board) {
   };
 }
 
+// 校验该板型构建目录里的 sdkconfig 是否真的按板型 flash 配置生成。
+// 覆盖两类坑：① server 未重启（旧进程不注入 SDKCONFIG_DEFAULTS，会用默认 2MB flash +
+// 默认 partitions.csv，出现 "Partitions tables occupies 3.8MB ... does not fit in 2MB"）；
+// ② sdkconfig / CMake 缓存粘住旧配置。返回 null 表示正常，否则返回原因。
+function diagnoseIdfConfig(board) {
+  const cfg = idfCfgFor(board);
+  if (!fs.existsSync(cfg.sdkconfig)) {
+    return `未找到 sdkconfig（${cfg.sdkconfig}）——本次配置可能未按板型注入`;
+  }
+  let txt = '';
+  try { txt = fs.readFileSync(cfg.sdkconfig, 'utf8'); } catch (e) { return 'sdkconfig 读取失败: ' + e.message; }
+  const wantSize = cfg.flash === '2mb' ? 'CONFIG_ESPTOOLPY_FLASHSIZE_2MB=y' : 'CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y';
+  const size = txt.match(/CONFIG_ESPTOOLPY_FLASHSIZE="([^"]+)"/);
+  const part = txt.match(/CONFIG_PARTITION_TABLE_FILENAME="([^"]+)"/);
+  if (!txt.includes(wantSize) || !part || part[1] !== cfg.partition) {
+    return `实际配置与板型不符（flash=${size ? size[1] : '?'}，分区表=${part ? part[1] : '?'}；`
+      + `期望 flash=${cfg.flash}，分区表=${cfg.partition}）——`
+      + '请确认 server 已重启（只有新代码才会按板型注入 SDKCONFIG_DEFAULTS），然后删除该板型 build 目录重试';
+  }
+  return null;
+}
+
 // sdkconfig 与 CMake 缓存都是"粘性"的：改了板型的 flash 设置后必须清掉才能生效。
 //   - sdkconfig：已存在的键不会被 defaults 覆盖 → 与期望配置不符时删除，让 set-target 重建
 //   - CMakeCache.txt：记录了上次配置的 SDKCONFIG 路径 → 不符时整个 build 目录删除（全量重建），
@@ -797,6 +819,12 @@ function ensureArduinoComponent() {
 function runIdfStream(res, innerCmd, label, board) {
   sseHeaders(res);
   sseSend(res, 'start', { label, cli: 'idf.py', args: innerCmd });
+  // 打印本次生效的 flash 配置（便于一眼确认按板型注入是否生效；看不到这行说明 server
+  // 跑的还是旧代码，需重启）
+  if (board) {
+    const c = idfCfgFor(board);
+    sseSend(res, 'sys', `[配置] ${board} → Flash=${c.flash}｜分区表=${c.partition}｜sdkconfig=${c.sdkconfig}`);
+  }
 
   const ac = ensureArduinoComponent();
   if (!ac.ok) {
@@ -836,6 +864,12 @@ function runIdfStream(res, innerCmd, label, board) {
     });
     child.on('close', code => {
       code = code == null ? 0 : code;
+      // 自检：无论成败都核对 sdkconfig 是否按板型 flash 生成（能直接点出"配置没注入"这类
+      // 会烧出启动即崩固件的隐患）
+      if (board) {
+        const bad = diagnoseIdfConfig(board);
+        if (bad) sseSend(res, 'err', '⚠ flash 配置自检未通过：' + bad);
+      }
       if (code === 0) {
         // 产物名 = 工程名（idf.py 绑定），前端显示为板子名
         const files = collectIdfFirmware(board);
@@ -1056,11 +1090,16 @@ const server = http.createServer((req, res) => {
     cleanStaleIdfBuildDir(board);
     // 板型 flash 配置变了（2MB <-> 4MB）时清掉粘住的 sdkconfig，让 set-target 按新 defaults 重建
     ensureIdfSdkconfig(board);
-    const idfCmd = action === 'flash' ? `idf.py -B "${bdir}" -p "${port}" flash` : `idf.py -B "${bdir}" build`;
+    // 按板型注入 flash 配置：SDKCONFIG_DEFAULTS（公共 defaults + 按 flash 叠加）与独立
+    // SDKCONFIG 路径。除了 idfShell 里设的同名环境变量，这里再用 -D 传 CMake 变量
+    // （IDF project.cmake 优先读 CMake 变量）做双保险。
+    const cfgD = `-D SDKCONFIG_DEFAULTS="${idfCfgFor(board).defaults}" -D SDKCONFIG="${idfCfgFor(board).sdkconfig}"`;
+    const bflag = `idf.py -B "${bdir}" ${cfgD}`;
+    const idfCmd = action === 'flash' ? `${bflag} -p "${port}" flash` : `${bflag} build`;
     // PowerShell 5.1 不支持 &&（PS7+ 语法），Windows 用 $LASTEXITCODE 条件执行；mac/Linux 保持 &&
     let inner = idfCmd;
     if (doSet) {
-      const setCmd = `idf.py -B "${bdir}" set-target ${target}`;
+      const setCmd = `${bflag} set-target ${target}`;
       inner = isWin() ? `${setCmd}; if ($LASTEXITCODE -eq 0) { ${idfCmd} }` : `${setCmd} && ${idfCmd}`;
     }
     runIdfStream(res, inner, (action === 'flash' ? 'C2 构建并烧录' : 'C2 构建'), board);
@@ -1159,10 +1198,14 @@ const server = http.createServer((req, res) => {
       if (!isValidC2Board(board)) { res.writeHead(400); res.end('bad board'); return; }
       const bdir = idfBuildDirFor(board);
       if (!fs.existsSync(bdir) || !collectIdfFirmware(board).length) { res.writeHead(404); res.end('no artifacts'); return; }
-      let flashCmd = `idf.py -B "${bdir}" -p "${port}" flash`;
+      // 同样按板型注入 flash 配置（-D 双保险，与环境变量一致），否则 idf.py flash 会
+      // 用错分区表/参数烧写
+      const fcfgD = `-D SDKCONFIG_DEFAULTS="${idfCfgFor(board).defaults}" -D SDKCONFIG="${idfCfgFor(board).sdkconfig}"`;
+      const fbflag = `idf.py -B "${bdir}" ${fcfgD}`;
+      let flashCmd = `${fbflag} -p "${port}" flash`;
       if (erase) {
         // Windows shell 5.1 无 &&，用 if ($LASTEXITCODE -eq 0) 串联；mac/Linux 用 &&（参考 buildC2 的 set-target 拼接）
-        const eraseCmd = `idf.py -B "${bdir}" -p "${port}" erase-flash`;
+        const eraseCmd = `${fbflag} -p "${port}" erase-flash`;
         flashCmd = isWin()
           ? `${eraseCmd}; if ($LASTEXITCODE -eq 0) { ${flashCmd} }`
           : `${eraseCmd} && ${flashCmd}`;
