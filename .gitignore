@@ -86,3 +86,7 @@ idf-c2/managed_components/
 idf-c2/sdkconfig
 idf-c2/sdkconfig.old
 idf-c2/dependencies.lock
+
+# 本地临时/诊断文件（不要提交）
+.probe.txt
+.gitstat.txt

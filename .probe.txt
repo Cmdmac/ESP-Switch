@@ -1,3 +1,0 @@
-﻿DEFS='sdkconfig.defaults;sdkconfig.defaults.2mb'
-CFG='D:\\work\\ESP-Switch\\idf-c2\\build\\BOARD_ESP32C2_SWITCH_NANO\\sdkconfig'
-
