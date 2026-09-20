@@ -1233,7 +1233,9 @@ const server = http.createServer((req, res) => {
         + `--before default_reset --after hard_reset ${sub}`;
       let flashCmd, label;
       if (direct) {
-        flashCmd = esp('write_flash @flash_args');     // 纯烧写：不编译
+        // 注意 '@flash_args' 必须加引号：PowerShell 里 @name 是 splatting（把变量展开成参数），
+        // 不加引号会被展开为空 → esptool 报 "the following arguments are required: <address> <filename>"。
+        flashCmd = esp("write_flash '@flash_args'");   // 纯烧写：不编译
         label = (erase ? '擦除+烧写 ' : '烧写 ') + board;
       } else {
         flashCmd = `${fbflag} -p "${port}" flash`;     // 回退：构建并烧录
