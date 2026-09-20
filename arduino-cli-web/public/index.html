@@ -292,8 +292,10 @@ async function loadMeta() {
     const c = await (await fetch('/api/idf/boards')).json();
     // 板型名后标注 flash 大小（2MB 板无 OTA 分区，用串口烧写；4MB 板支持网页 OTA）；
     // data-name 存纯板子名，避免下游用 option 文本拼产物名时带上这些标注。
+    // 板型下拉只显示板型名（flash 由旁边的「Flash 大小」下拉决定）；
+    // data-flash 存该板型的预设 flash，切换板型时用它带出默认值。
     $('idfboard').innerHTML = c.boards.map(x =>
-      `<option value="${x.macro}" data-macro="${x.macro}" data-name="${x.name}" data-flash="${x.flash || '4mb'}">${x.name} · ${(x.flash || '4mb').toUpperCase()} Flash${(x.flash === '2mb') ? '（无 OTA）' : ''}</option>`
+      `<option value="${x.macro}" data-macro="${x.macro}" data-name="${x.name}" data-flash="${x.flash || '4mb'}">${x.name}</option>`
     ).join('');
     // 板型 → 预设 flash 映射（构建产物 Tab 的 C2 刷写按钮按此带 flash 参数）
     c.boards.forEach(x => { idfFlashMap[x.macro] = x.flash || '4mb'; });
