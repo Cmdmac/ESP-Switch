@@ -54,7 +54,14 @@
   #include <Preferences.h>
   #include <ESPmDNS.h>
   #include <Update.h>         // 网页 OTA 固件升级
-  #include <esp_ota_ops.h>    // 运行期判断是否存在 OTA 分区（2MB 单分区板不支持网页升级）
+  // 运行期判断是否存在 OTA 分区（2MB 单分区板不支持网页升级）。
+  // 用 __has_include 保护：esp_ota_ops.h 属于 IDF 的 app_update 组件，
+  //  - ESP-IDF 构建（idf-c2）：main/CMakeLists.txt 已把 app_update 加进 REQUIRES，可见；
+  //  - arduino-cli 构建：core 若未暴露该头则自动降级（otaAvailable 保持 true），不中断编译。
+  #if __has_include(<esp_ota_ops.h>)
+    #include <esp_ota_ops.h>
+    #define HAS_ESP_OTA_OPS 1
+  #endif
   #include <time.h>           // NTP 时间：configTime / getLocalTime / time()
 #endif
 
@@ -66,7 +73,7 @@
 bool otaAvailable = true;
 
 void detectOtaSupport() {
-#ifndef ESP8266
+#if defined(HAS_ESP_OTA_OPS)
   otaAvailable = (esp_ota_get_next_update_partition(NULL) != NULL);
 #endif
 }

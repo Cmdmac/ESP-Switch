@@ -1,9 +1,10 @@
 # REQUIRES 里的 arduino 组件名 = 组件管理器安装目录名：
 # espressif/arduino-esp32 -> managed_components/espressif__arduino-esp32
+# app_update：esp_ota_ops.h（固件里用 esp_ota_get_next_update_partition 判断有无 OTA 分区）
 idf_component_register(
     SRCS "main.cpp"
     INCLUDE_DIRS "."
-    REQUIRES espressif__arduino-esp32 esp_wifi esp_netif esp_event esp_common driver esp_hw_support
+    REQUIRES espressif__arduino-esp32 esp_wifi esp_netif esp_event esp_common driver esp_hw_support app_update
 )
 
 # main.cpp 是薄壳：include ../../ESP32_Light_Switch/ESP32_Light_Switch.ino（唯一固件源码）。
@@ -15,7 +16,7 @@ idf_component_register(
 # "WiFiType.h includes esp_wifi_types.h ... not in the requirements list"。
 # 这里不改 arduino 组件自身的文件，而是在本工程内给它补 include 目录与链接。
 # 组件列表按需扩展：把缺失的组件名同时加到上面 REQUIRES 与下面的列表即可。
-set(ARDUINO_MISSING_REQUIRES esp_wifi esp_netif esp_event esp_common driver esp_hw_support)
+set(ARDUINO_MISSING_REQUIRES esp_wifi esp_netif esp_event esp_common driver esp_hw_support app_update)
 idf_component_get_property(_arduino_lib espressif__arduino-esp32 COMPONENT_LIB)
 if(_arduino_lib)
   foreach(_c ${ARDUINO_MISSING_REQUIRES})
