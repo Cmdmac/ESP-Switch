@@ -832,9 +832,11 @@ function ensureArduinoComponent() {
 // 再初始化 IDF 环境后在 idf-c2 目录跑构建/烧录。IDF_C2_BOARD 通过 env 注入。
 // Windows 用 PowerShell 执行（ESP-IDF 官方仅支持 cmd/PowerShell，bash 会被 MSYS 检测拒绝），
 // macOS/Linux 用 bash。
-function runIdfStream(res, innerCmd, label, board, flashOverride) {
+function runIdfStream(res, innerCmd, label, board, flashOverride, note) {
   sseHeaders(res);
   sseSend(res, 'start', { label, cli: 'idf.py', args: innerCmd });
+  // note：区分"纯烧写（不编译）"与"含构建"，避免用户误以为刷写必须重新编译
+  if (note) sseSend(res, 'sys', '[模式] ' + label + note);
   // 打印本次生效的 flash 配置（便于一眼确认按板型/下拉选择注入是否生效；看不到这行说明
   // server 跑的还是旧代码，需重启）
   if (board) {
@@ -1221,17 +1223,32 @@ const server = http.createServer((req, res) => {
       const fflash = url.searchParams.get('flash') || '';
       const fcfgD = (() => { const c = idfCfgFor(board, fflash); return `-D SDKCONFIG_DEFAULTS="${c.defaults}" -D SDKCONFIG="${c.sdkconfig}"`; })();
       const fbflag = `idf.py -B "${bdir}" ${fcfgD}`;
-      let flashCmd = `${fbflag} -p "${port}" flash`;
+      // idf.py flash 的语义是"先构建再烧录"，会在刷写时重新编译。这里若已有上次构建生成的
+      // flash_args（含各 bin 的偏移，路径相对 build 目录）就直接用 esptool 纯烧写，跳过编译；
+      // 只有在缺 flash_args 时才回退到 idf.py flash（构建+烧）。
+      const flashArgs = path.join(bdir, 'flash_args');
+      const direct = fs.existsSync(flashArgs) && fs.existsSync(IDF_VENV_PY);
+      const enter = isWin() ? `Set-Location '${bdir}'; ` : `cd '${bdir}'; `;
+      const esp = (sub) => `${enter}& '${IDF_VENV_PY}' -m esptool --chip esp32c2 -p "${port}" `
+        + `--before default_reset --after hard_reset ${sub}`;
+      let flashCmd, label;
+      if (direct) {
+        flashCmd = esp('write_flash @flash_args');     // 纯烧写：不编译
+        label = (erase ? '擦除+烧写 ' : '烧写 ') + board;
+      } else {
+        flashCmd = `${fbflag} -p "${port}" flash`;     // 回退：构建并烧录
+        label = (erase ? '擦除+烧写 ' : '烧写（会先构建）') + board;
+      }
       if (erase) {
-        // Windows shell 5.1 无 &&，用 if ($LASTEXITCODE -eq 0) 串联；mac/Linux 用 &&（参考 buildC2 的 set-target 拼接）
-        const eraseCmd = `${fbflag} -p "${port}" erase-flash`;
+        // Windows shell 5.1 无 &&，用 if ($LASTEXITCODE -eq 0) 串联；mac/Linux 用 &&
+        const eraseCmd = direct ? esp('erase_flash') : `${fbflag} -p "${port}" erase-flash`;
         flashCmd = isWin()
           ? `${eraseCmd}; if ($LASTEXITCODE -eq 0) { ${flashCmd} }`
           : `${eraseCmd} && ${flashCmd}`;
       }
       // 传未包装的命令：runIdfStream 内部统一用 idfShell 包装（含 venv / 按板型 sdkconfig），
       // 避免此处再包一层导致嵌套。
-      runIdfStream(res, flashCmd, (erase ? '擦除+烧写 ' : '烧写 ') + board, board, fflash);
+      runIdfStream(res, flashCmd, label, board, fflash, direct ? '（纯烧写，不编译）' : '（含构建）');
     } else {
       res.writeHead(400); res.end('bad type');
     }
