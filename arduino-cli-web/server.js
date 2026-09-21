@@ -352,9 +352,18 @@ function buildDirFor(fqbn, board) {
   return path.join(BUILD_BASE, (board && isValidBoardMacro(board)) ? base + '_' + board : base);
 }
 
-// IDF 构建产物目录：按 C2 板型分开（idf.py -B build/<BOARD_XXX>），避免切换板型互相覆盖。
-function idfBuildDirFor(board) {
-  return path.join(IDF_C2_DIR, 'build', (board && isValidC2Board(board)) ? board : 'BOARD_ESP32C2_SWITCH_NANO');
+// IDF 构建产物目录：按「C2 板型 + flash 大小」分开（idf.py -B build/<BOARD_XXX>-<flash>）。
+// 2MB 与 4MB 的产物各自独立、互不覆盖，切换 flash 时也不必重新全量编译（缓存仍在）。
+// 目录名形如 idf-c2/build/BOARD_ESP32C2_SWITCH_DEV-4mb
+function idfBuildDirFor(board, flashOverride) {
+  const b = (board && isValidC2Board(board)) ? board : 'BOARD_ESP32C2_SWITCH_NANO';
+  return path.join(IDF_C2_DIR, 'build', b + '-' + parseFlashParam(flashOverride, b));
+}
+
+// 从构建目录名解析 { board, flash }（旧格式 build/<BOARD_XXX> 无 flash 后缀，返回 null）
+function parseIdfBuildDirName(name) {
+  const m = String(name || '').match(/^(BOARD_ESP32C2_[A-Z0-9_]+)-(2mb|4mb)$/);
+  return m ? { board: m[1], flash: m[2] } : null;
 }
 
 // 板型预设 flash 大小：'2mb' | '4mb'（见 C2_BOARDS[].flash，缺省 4mb）。
@@ -375,13 +384,13 @@ function parseFlashParam(v, board) {
 //   defaults  —— 公共 defaults + 按 flash 大小的叠加文件（SDKCONFIG_DEFAULTS 分号分隔，
 //                后者覆盖前者）。2MB 用 partitions-2mb.csv（单 factory、无 OTA），
 //                4MB 用 partitions.csv（双 OTA）。
-//   sdkconfig —— 每板型独立输出路径（SDKCONFIG），避免 2MB/4MB 板的配置互相"粘住"。
+//   sdkconfig —— 落在按「板型+flash」隔离的构建目录里，2MB/4MB 配置天然不会互相粘住。
 function idfCfgFor(board, flashOverride) {
   const flash = parseFlashParam(flashOverride, board);
   return {
     flash,
     defaults: `sdkconfig.defaults;sdkconfig.defaults.${flash}`,
-    sdkconfig: path.join(idfBuildDirFor(board), 'sdkconfig'),
+    sdkconfig: path.join(idfBuildDirFor(board, flash), 'sdkconfig'),
     partition: flash === '2mb' ? 'partitions-2mb.csv' : 'partitions.csv',
   };
 }
@@ -418,7 +427,7 @@ function diagnoseIdfConfig(board, flashOverride) {
 //     4MB 编译（出现"改了 flash 但烧出来还是崩溃"）
 function ensureIdfSdkconfig(board, flashOverride) {
   const cfg = idfCfgFor(board, flashOverride);
-  const bdir = idfBuildDirFor(board);
+  const bdir = idfBuildDirFor(board, flashOverride);
   const norm = (s) => String(s).replace(/\\/g, '/');
   const cacheFile = path.join(bdir, 'CMakeCache.txt');
   if (fs.existsSync(cacheFile)) {
@@ -445,8 +454,8 @@ function ensureIdfSdkconfig(board, flashOverride) {
 
 // 构建目录若存在但不是合法 CMake 目录（无 CMakeCache.txt，多为上次失败残留），
 // 先手动删除——否则 set-target 触发 fullclean 时 IDF 会拒绝删除并报退出码 2。
-function cleanStaleIdfBuildDir(board) {
-  const bdir = idfBuildDirFor(board);
+function cleanStaleIdfBuildDir(board, flashOverride) {
+  const bdir = idfBuildDirFor(board, flashOverride);
   try {
     if (fs.existsSync(bdir) && !fs.existsSync(path.join(bdir, 'CMakeCache.txt'))) {
       fs.rmSync(bdir, { recursive: true, force: true });
@@ -645,11 +654,13 @@ function resolveArtifactPath(type, buildDir, board, displayName) {
   const direct = path.join(buildDir, displayName);
   if (fs.existsSync(direct)) return direct;
   const bname = boardDisplayName(board);
-  if (bname && displayName.startsWith(bname)) {
+  // C2 显示名带 flash 段（如 ESP32-C2-Switch-Dev-4MB.bin）→ 去掉后再映射回工程名
+  const base = String(displayName).replace(/-(2MB|4MB)(?=\.)/i, '');
+  if (bname && base.startsWith(bname)) {
     const esc = bname.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const sketch = type === 'idf'
-      ? displayName.replace(new RegExp('^' + esc), 'esp32_light_switch_c2')
-      : displayName.replace(new RegExp('^' + esc), 'ESP32_Light_Switch.ino');
+      ? base.replace(new RegExp('^' + esc), 'esp32_light_switch_c2')
+      : base.replace(new RegExp('^' + esc), 'ESP32_Light_Switch.ino');
     const p = path.join(buildDir, sketch);
     if (fs.existsSync(p)) return p;
   }
@@ -682,9 +693,9 @@ function restoreSketchNamedArtifacts(buildDir, board) {
 
 // 收集 idf-c2 构建产物（指定板型的 build/<BOARD_XXX> 下所有 .bin，按主 app bin 优先排序）。
 // 磁盘只保留工具生成的原始名（idf.py flash 依赖）；显示名由前端映射，下载走 resolveArtifactPath。
-function collectIdfFirmware(board) {
+function collectIdfFirmware(board, flashOverride) {
   const out = [];
-  const root = idfBuildDirFor(board);
+  const root = idfBuildDirFor(board, flashOverride);
   if (!fs.existsSync(root)) return out;
   (function walk(dir) {
     let names;
@@ -731,7 +742,8 @@ function scanArduinoArtifacts() {
   return out;
 }
 
-// 扫描 idf-c2/build/<BOARD_XXX> 下所有 C2 板型的构建产物
+// 扫描 idf-c2/build/<BOARD_XXX>-<flash> 下所有 C2 板型的构建产物（按板型 + flash 分组，
+// 同一板子的 2MB / 4MB 产物分别展示）
 function scanIdfArtifacts() {
   const out = [];
   const root = path.join(IDF_C2_DIR, 'build');
@@ -743,7 +755,9 @@ function scanIdfArtifacts() {
     let st;
     try { st = fs.statSync(full); } catch (e) { continue; }
     if (!st.isDirectory()) continue;
-    const board = C2_BOARDS.find(b => b.macro === d);
+    const parsed = parseIdfBuildDirName(d);           // 旧格式 build/<BOARD_XXX>（无 flash 后缀）跳过
+    if (!parsed) continue;
+    const board = C2_BOARDS.find(b => b.macro === parsed.board);
     if (!board) continue;
     const files = collectFirmware(full).map(f => {
       let mt = 0;
@@ -751,7 +765,7 @@ function scanIdfArtifacts() {
       return { name: f.name, size: f.size, mtime: mt };
     });
     if (!files.length) continue;
-    out.push({ type: 'idf', board: board.macro, boardName: board.name, files });
+    out.push({ type: 'idf', board: board.macro, boardName: board.name, flash: parsed.flash, files });
   }
   return out;
 }
@@ -889,9 +903,9 @@ function runIdfStream(res, innerCmd, label, board, flashOverride, note) {
         if (bad) sseSend(res, 'err', '⚠ flash 配置自检未通过：' + bad);
       }
       if (code === 0) {
-        // 产物名 = 工程名（idf.py 绑定），前端显示为板子名
-        const files = collectIdfFirmware(board);
-        sseSend(res, 'firmware', { files, size: null, board: board || '' });
+        // 产物名 = 工程名（idf.py 绑定），前端显示为「板子名-flash」
+        const files = collectIdfFirmware(board, flashOverride);
+        sseSend(res, 'firmware', { files, size: null, board: board || '', flash: idfCfgFor(board, flashOverride).flash });
       }
       sseSend(res, 'done', { code });
       try { res.end(); } catch (_) {}
@@ -1102,11 +1116,11 @@ const server = http.createServer((req, res) => {
       if (!isValidPort(port)) { res.writeHead(400); res.end('bad port'); return; }
     } else if (action !== 'build') { res.writeHead(400); res.end('bad action'); return; }
     const target = 'esp32c2';
-    // 按板型分构建目录：build/<BOARD_XXX>，切换板型互不覆盖
-    const bdir = idfBuildDirFor(board);
     const flash = url.searchParams.get('flash') || '';   // 网页「Flash 大小」下拉（2mb/4mb），缺省用板型预设
+    // 构建目录按「板型 + flash」隔离：build/<BOARD_XXX>-<flash>，板型与 2/4MB 的产物都互不覆盖
+    const bdir = idfBuildDirFor(board, flash);
     // 上次失败可能留下非 CMake 的残留目录，先清理避免 set-target fullclean 报错
-    cleanStaleIdfBuildDir(board);
+    cleanStaleIdfBuildDir(board, flash);
     // flash 配置变了（含 2MB <-> 4MB 切换）时清掉粘住的 sdkconfig / build 缓存
     ensureIdfSdkconfig(board, flash);
     // 按板型 + 所选 flash 注入配置：SDKCONFIG_DEFAULTS（公共 defaults + 按 flash 叠加）与
@@ -1129,10 +1143,12 @@ const server = http.createServer((req, res) => {
   if (p === '/api/idf/download') {
     const file = url.searchParams.get('file');
     const board = url.searchParams.get('board') || 'BOARD_ESP32C2_SWITCH_NANO';
+    const flash = url.searchParams.get('flash') || '';
     if (!file || !/^[\w.\-]+$/.test(file)) { res.writeHead(400); res.end('bad params'); return; }
     if (!isValidC2Board(board)) { res.writeHead(400); res.end('bad board'); return; }
-    const root = path.resolve(idfBuildDirFor(board));
-    // file 是板子名显示名 → 映射回真实工程名文件；兼容直接传真实名
+    // 按「板型 + flash」定位构建目录（2MB 与 4MB 产物各在一处）
+    const root = path.resolve(idfBuildDirFor(board, flash));
+    // file 是「板子名-flash」显示名 → 映射回真实工程名文件；兼容直接传真实名
     const fp = resolveArtifactPath('idf', root, board, file);
     if (!fp) { res.writeHead(404); res.end('not found'); return; }
     const fr = path.resolve(fp);
@@ -1178,7 +1194,7 @@ const server = http.createServer((req, res) => {
       dir = buildDirFor(fqbn, board);
     } else if (type === 'idf') {
       if (!isValidC2Board(board)) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, reason: '参数不合法' })); return; }
-      dir = idfBuildDirFor(board);
+      dir = idfBuildDirFor(board, url.searchParams.get('flash') || '');
     } else {
       res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, reason: '未知类型' })); return;
     }
@@ -1216,11 +1232,10 @@ const server = http.createServer((req, res) => {
       runStream(res, args, (erase ? '擦除+烧写 ' : '烧写 ') + board, buildDir, fqbn, board, { erase, port });
     } else if (type === 'idf') {
       if (!isValidC2Board(board)) { res.writeHead(400); res.end('bad board'); return; }
-      const bdir = idfBuildDirFor(board);
-      if (!fs.existsSync(bdir) || !collectIdfFirmware(board).length) { res.writeHead(404); res.end('no artifacts'); return; }
-      // 同样按板型 + flash 参数注入配置（-D 双保险，与环境变量一致），否则 idf.py flash
-      // 会读错 sdkconfig / 用错分区表参数烧写
       const fflash = url.searchParams.get('flash') || '';
+      // 按「板型 + flash」定位构建目录（2MB 与 4MB 产物各在一处）
+      const bdir = idfBuildDirFor(board, fflash);
+      if (!fs.existsSync(bdir) || !collectIdfFirmware(board, fflash).length) { res.writeHead(404); res.end('no artifacts'); return; }
       const fcfgD = (() => { const c = idfCfgFor(board, fflash); return `-D SDKCONFIG_DEFAULTS="${c.defaults}" -D SDKCONFIG="${c.sdkconfig}"`; })();
       const fbflag = `idf.py -B "${bdir}" ${fcfgD}`;
       // idf.py flash 的语义是"先构建再烧录"，会在刷写时重新编译。这里若已有上次构建生成的

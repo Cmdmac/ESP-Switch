@@ -423,10 +423,13 @@ function boardNameOf(macro, selectId) {
   return opt ? (opt.dataset.name || opt.text) : macro;
 }
 // 产物文件名换成板子名：ESP32_Light_Switch.ino.bin -> ESP32C3-Switch.bin
-function prettyFw(name, bname) {
+// C2（IDF）产物额外带 flash 段以区分同板型的 2MB/4MB：
+//   esp32_light_switch_c2.bin -> ESP32-C2-Switch-Dev-4MB.bin
+function prettyFw(name, bname, flash) {
+  const ext = flash ? '-' + String(flash).toUpperCase() : '';
   return String(name)
     .replace(/^ESP32_Light_Switch\.ino/, bname)
-    .replace(/^esp32_light_switch_c2\./, bname + '.');
+    .replace(/^esp32_light_switch_c2(?=\.)/, bname + ext);
 }
 
 function showFirmware(d) {
@@ -513,9 +516,11 @@ function showIdfFirmware(d) {
   if (!d || !d.files || !d.files.length) { $('idfwlist').innerHTML = '<div class="fw-size">（本次构建未生成 .bin 产物）</div>'; return; }
   let html = '<div style="display:flex;flex-direction:column;gap:8px;">';
   const bname = boardNameOf(d.board, 'idfboard');
+  // flash 段用于区分同板型的 2MB/4MB 产物（后端按 flash 选构建目录）
+  const flash = d.flash || idfFlashSel();
   d.files.forEach(f => {
-    const dname = prettyFw(f.name, bname);
-    const url = `/api/idf/download?board=${encodeURIComponent(d.board || '')}&file=${encodeURIComponent(dname)}`;
+    const dname = prettyFw(f.name, bname, flash);
+    const url = `/api/idf/download?board=${encodeURIComponent(d.board || '')}&flash=${encodeURIComponent(flash)}&file=${encodeURIComponent(dname)}`;
     html += `<div class="fw-item"><div class="fw-info"><div class="fw-name">${dname}</div><div class="fw-size">${fmtSize(f.size)}</div></div><a href="${url}" class="dlbtn" download="${dname}">下载</a></div>`;
   });
   html += '</div>';
@@ -601,23 +606,28 @@ async function loadArtifacts() {
   list.forEach(g => {
     const tag = g.type === 'idf' ? '<span class="pill" style="background:#fef3c7;color:#92400e;font-size:12px;padding:3px 10px;">IDF</span>'
                                 : '<span class="pill" style="background:#dcfce7;color:#166534;font-size:12px;padding:3px 10px;">Arduino</span>';
+    // C2（IDF）按 flash 大小分成不同分组：同一板型的 2MB 与 4MB 产物分别展示、各自刷写
+    const gflash = (g.type === 'idf' && g.flash) ? g.flash : '';
+    const flashTag = gflash
+      ? ` <span class="pill" style="background:${gflash === '2mb' ? '#fee2e2;color:#991b1b' : '#e0f2fe;color:#075985'};font-size:12px;padding:3px 10px;">${gflash.toUpperCase()} FLASH${gflash === '2mb' ? ' · 无 OTA' : ' · 支持 OTA'}</span>`
+      : '';
     // 刷写 = 烧该板型的整套固件（bootloader/分区/应用，与具体 .bin 文件无关），
     // 按钮放在板型分组标题行（每组一个），右边缘与文件行下载按钮竖直对齐
     // （.art-group-title 的 padding-right:12px 与 .fw-item 对齐）。
     const main = (g.files && g.files[0]) || { name: '' };
-    const gdata = `data-type="${g.type}" data-fqbn="${encodeURIComponent(g.fqbn || '')}" data-board="${encodeURIComponent(g.board)}" data-boardname="${encodeURIComponent(g.boardName)}" data-name="${encodeURIComponent(main.name)}"`;
+    const gdata = `data-type="${g.type}" data-fqbn="${encodeURIComponent(g.fqbn || '')}" data-board="${encodeURIComponent(g.board)}" data-boardname="${encodeURIComponent(g.boardName)}" data-flash="${encodeURIComponent(gflash)}" data-name="${encodeURIComponent(main.name)}"`;
     html += `<div class="card" style="margin-bottom:12px;">
-      <div class="art-group-title">${tag} ${g.boardName}
-        <button class="ghost opendirbtn" title="打开该板型的构建目录" data-type="${g.type}" data-board="${encodeURIComponent(g.board)}" data-fqbn="${encodeURIComponent(g.fqbn || '')}" style="padding:4px 8px;line-height:0;">
+      <div class="art-group-title">${tag} ${g.boardName}${flashTag}
+        <button class="ghost opendirbtn" title="打开该板型的构建目录" data-type="${g.type}" data-board="${encodeURIComponent(g.board)}" data-fqbn="${encodeURIComponent(g.fqbn || '')}" data-flash="${encodeURIComponent(gflash)}" style="padding:4px 8px;line-height:0;">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
         </button>
-        <button class="ghost flashbtn" style="margin-left:auto;" ${gdata} title="把该板型的编译产物整套烧写到所选串口（含 bootloader/分区/应用，不重新编译）">刷写</button>
+        <button class="ghost flashbtn" style="margin-left:auto;" ${gdata} title="把该分组的编译产物整套烧写到所选串口（含 bootloader/分区/应用，不重新编译）">刷写</button>
       </div>
       <div style="display:flex;flex-direction:column;gap:8px;">`;
     g.files.forEach(f => {
-      const dname = prettyFw(f.name, g.boardName);
+      const dname = prettyFw(f.name, g.boardName, gflash);
       let url;
-      if (g.type === 'idf') url = `/api/idf/download?board=${encodeURIComponent(g.board)}&file=${encodeURIComponent(dname)}`;
+      if (g.type === 'idf') url = `/api/idf/download?board=${encodeURIComponent(g.board)}&flash=${encodeURIComponent(gflash)}&file=${encodeURIComponent(dname)}`;
       else url = `/api/download?fqbn=${encodeURIComponent(g.fqbn)}&board=${encodeURIComponent(g.board)}&file=${encodeURIComponent(dname)}`;
       html += `<div class="fw-item">
         <div class="fw-info">
@@ -655,7 +665,9 @@ function flashArtifact(btn) {
   const board = decodeURIComponent(btn.dataset.board);
   const bname = decodeURIComponent(btn.dataset.boardname || board);
   const name = decodeURIComponent(btn.dataset.name || '');
-  const dname = prettyFw(name, bname);
+  const btnFlash = decodeURIComponent(btn.dataset.flash || '');
+  const flash = (type === 'idf') ? (btnFlash || idfFlashMap[board] || '4mb') : '';
+  const dname = prettyFw(name, bname, flash);
   $('artModal').hidden = false;
   artLogEl.innerHTML = '';
   artFlashBusy = true;
@@ -663,8 +675,7 @@ function flashArtifact(btn) {
   const erase = $('eraseFirst') && $('eraseFirst').checked ? 1 : 0;   // 全新刷写：先整片擦除（含 NVS）
   appendArt('sys', '▶ ' + (erase ? '擦除+烧写 ' : '烧写 ') + dname + ' → ' + bname + ' 开始…');
   $('artrunlabel').textContent = erase ? '（擦除中…）' : '（烧写中…）';
-  // C2（IDF）按该板型预设 flash 带参数：决定 flash 大小/分区表，烧错会启动即崩
-  const flash = (type === 'idf') ? (idfFlashMap[board] || '4mb') : '';
+  // C2（IDF）按分组标注的 flash 带参数：决定构建目录/分区表，烧错会启动即崩
   const params = `type=${encodeURIComponent(type)}&fqbn=${encodeURIComponent(fqbn)}&board=${encodeURIComponent(board)}&port=${encodeURIComponent(port)}&erase=${erase}`
     + (flash ? `&flash=${encodeURIComponent(flash)}` : '');
   if (type === 'idf') appendArt('sys', '[配置] Flash=' + flash + '（' + (flash === '2mb' ? 'partitions-2mb.csv，无 OTA' : 'partitions.csv，支持 OTA') + '）');
@@ -694,7 +705,8 @@ document.addEventListener('click', e => {
     const odType = od.dataset.type;
     const odBoard = decodeURIComponent(od.dataset.board);
     const odFqbn = decodeURIComponent(od.dataset.fqbn || '');
-    const q = `type=${encodeURIComponent(odType)}&board=${encodeURIComponent(odBoard)}&fqbn=${encodeURIComponent(odFqbn)}`;
+    const odFlash = decodeURIComponent(od.dataset.flash || '');   // C2：按 flash 定位构建目录
+    const q = `type=${encodeURIComponent(odType)}&board=${encodeURIComponent(odBoard)}&fqbn=${encodeURIComponent(odFqbn)}&flash=${encodeURIComponent(odFlash)}`;
     fetch('/api/open-dir?' + q).then(r => r.json()).then(d => {
       if (!d.ok) alert('打开目录失败：' + (d.reason || '未知错误'));
     }).catch(() => alert('打开目录失败：无法连接服务器'));
