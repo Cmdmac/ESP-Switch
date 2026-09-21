@@ -98,6 +98,17 @@
   .art-group-title { font-size: 16px; font-weight: 700; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; padding-right: 12px; }  /* padding-right 与 .fw-item 的 12px 一致，保证标题行右侧按钮与文件行按钮竖直对齐 */
   .art-file-name { font-family: var(--mono); font-size: 15px; font-weight: 600; word-break: break-all; }
   .art-file-size { font-size: 15px; font-weight: 700; color: var(--primary); margin-left: 10px; }
+  /* 产物按板型切换的二级 Tab（同一板型的 2MB / 4MB 是各自独立的 Tab） */
+  .art-tabbar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; border-bottom: 2px solid var(--border); }
+  .art-tab {
+    padding: 8px 16px; border: none; border-radius: 8px 8px 0 0;
+    background: transparent; color: var(--muted); font-size: 13.5px;
+    cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -2px;
+    display: inline-flex; align-items: center; gap: 7px;
+  }
+  .art-tab:hover { background: #eef2ff; color: var(--primary-d); }
+  .art-tab.active { color: var(--primary); font-weight: 600; border-bottom-color: var(--primary); background: #fff; }
+  .art-tab-flash { font-size: 11px; padding: 2px 7px; border-radius: 999px; font-weight: 600; }
   .art-file-time { font-size: 12px; color: var(--muted); margin-top: 2px; }
 </style>
 </head>
@@ -208,7 +219,7 @@
   <div class="tab-panel" id="panel-artifacts" hidden>
     <div class="card">
       <div class="row" style="justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
-        <div class="log-head" style="margin:0;">全部板型编译产物（含生成时间）</div>
+        <div class="log-head" style="margin:0;">编译产物（按板型切换 · 含生成时间）</div>
         <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
           <label for="artport" style="font-size:14px; color:var(--muted); white-space:nowrap;">烧写端口</label>
           <select id="artport" style="min-width:140px;"></select>
@@ -589,6 +600,14 @@ function fmtTime(ms) {
   const p = n => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
+// 产物分组缓存：切换板型 Tab 时只重渲染面板，不再请求接口
+let artCache = [];
+let artActiveKey = '';
+// Tab 键 = 板型（同一板型的 2MB / 4MB 合并进同一个 Tab，Tab 内各自一张卡片）
+function boardKey(g) { return `${g.type}|${g.board}`; }
+// 该分组的 flash 标注（仅 C2/IDF 有；Arduino 板为空）
+function flashOf(g) { return (g.type === 'idf' && g.flash) ? g.flash : ''; }
+
 async function loadArtifacts() {
   const box = $('artlist');
   box.innerHTML = '<div class="fw-size" style="padding:12px;">（加载中…）</div>';
@@ -598,25 +617,26 @@ async function loadArtifacts() {
     return;
   }
   const list = data.artifacts || [];
-  if (!list.length) {
-    box.innerHTML = '<div class="fw-size" style="padding:12px;">（还没有任何编译产物 —— 先在对应 Tab 编译一次）</div>';
-    return;
-  }
-  let html = '';
-  list.forEach(g => {
-    const tag = g.type === 'idf' ? '<span class="pill" style="background:#fef3c7;color:#92400e;font-size:12px;padding:3px 10px;">IDF</span>'
-                                : '<span class="pill" style="background:#dcfce7;color:#166534;font-size:12px;padding:3px 10px;">Arduino</span>';
-    // C2（IDF）按 flash 大小分成不同分组：同一板型的 2MB 与 4MB 产物分别展示、各自刷写
-    const gflash = (g.type === 'idf' && g.flash) ? g.flash : '';
-    const flashTag = gflash
-      ? ` <span class="pill" style="background:${gflash === '2mb' ? '#fee2e2;color:#991b1b' : '#e0f2fe;color:#075985'};font-size:12px;padding:3px 10px;">${gflash.toUpperCase()} FLASH${gflash === '2mb' ? ' · 无 OTA' : ' · 支持 OTA'}</span>`
-      : '';
-    // 刷写 = 烧该板型的整套固件（bootloader/分区/应用，与具体 .bin 文件无关），
-    // 按钮放在板型分组标题行（每组一个），右边缘与文件行下载按钮竖直对齐
-    // （.art-group-title 的 padding-right:12px 与 .fw-item 对齐）。
-    const main = (g.files && g.files[0]) || { name: '' };
-    const gdata = `data-type="${g.type}" data-fqbn="${encodeURIComponent(g.fqbn || '')}" data-board="${encodeURIComponent(g.board)}" data-boardname="${encodeURIComponent(g.boardName)}" data-flash="${encodeURIComponent(gflash)}" data-name="${encodeURIComponent(main.name)}"`;
-    html += `<div class="card" style="margin-bottom:12px;">
+  artCache = list;
+  // 保持当前选中的板型；它不存在了（产物被清掉）才回落到第一个
+  if (!list.some(g => boardKey(g) === artActiveKey)) artActiveKey = list.length ? boardKey(list[0]) : '';
+  renderArtifacts();
+}
+
+// 单个「板型 + flash」分组的卡片（本 Tab 内可能有 2MB / 4MB 两张）
+function renderGroupCard(g) {
+  const tag = g.type === 'idf' ? '<span class="pill" style="background:#fef3c7;color:#92400e;font-size:12px;padding:3px 10px;">IDF</span>'
+                              : '<span class="pill" style="background:#dcfce7;color:#166534;font-size:12px;padding:3px 10px;">Arduino</span>';
+  const gflash = flashOf(g);
+  const flashTag = gflash
+    ? ` <span class="pill" style="background:${gflash === '2mb' ? '#fee2e2;color:#991b1b' : '#e0f2fe;color:#075985'};font-size:12px;padding:3px 10px;">${gflash.toUpperCase()} FLASH${gflash === '2mb' ? ' · 无 OTA' : ' · 支持 OTA'}</span>`
+    : '';
+  // 刷写 = 烧该分组的整套固件（bootloader/分区/应用，与具体 .bin 文件无关），
+  // 按钮放在分组标题行（每组一个），右边缘与文件行下载按钮竖直对齐
+  // （.art-group-title 的 padding-right:12px 与 .fw-item 对齐）。
+  const main = (g.files && g.files[0]) || { name: '' };
+  const gdata = `data-type="${g.type}" data-fqbn="${encodeURIComponent(g.fqbn || '')}" data-board="${encodeURIComponent(g.board)}" data-boardname="${encodeURIComponent(g.boardName)}" data-flash="${encodeURIComponent(gflash)}" data-name="${encodeURIComponent(main.name)}"`;
+  let html = `<div class="card" style="margin-bottom:12px;">
       <div class="art-group-title">${tag} ${g.boardName}${flashTag}
         <button class="ghost opendirbtn" title="打开该板型的构建目录" data-type="${g.type}" data-board="${encodeURIComponent(g.board)}" data-fqbn="${encodeURIComponent(g.fqbn || '')}" data-flash="${encodeURIComponent(gflash)}" style="padding:4px 8px;line-height:0;">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
@@ -624,22 +644,54 @@ async function loadArtifacts() {
         <button class="ghost flashbtn" style="margin-left:auto;" ${gdata} title="把该分组的编译产物整套烧写到所选串口（含 bootloader/分区/应用，不重新编译）">刷写</button>
       </div>
       <div style="display:flex;flex-direction:column;gap:8px;">`;
-    g.files.forEach(f => {
-      const dname = prettyFw(f.name, g.boardName, gflash);
-      let url;
-      if (g.type === 'idf') url = `/api/idf/download?board=${encodeURIComponent(g.board)}&flash=${encodeURIComponent(gflash)}&file=${encodeURIComponent(dname)}`;
-      else url = `/api/download?fqbn=${encodeURIComponent(g.fqbn)}&board=${encodeURIComponent(g.board)}&file=${encodeURIComponent(dname)}`;
-      html += `<div class="fw-item">
+  g.files.forEach(f => {
+    const dname = prettyFw(f.name, g.boardName, gflash);
+    let url;
+    if (g.type === 'idf') url = `/api/idf/download?board=${encodeURIComponent(g.board)}&flash=${encodeURIComponent(gflash)}&file=${encodeURIComponent(dname)}`;
+    else url = `/api/download?fqbn=${encodeURIComponent(g.fqbn)}&board=${encodeURIComponent(g.board)}&file=${encodeURIComponent(dname)}`;
+    html += `<div class="fw-item">
         <div class="fw-info">
           <div class="art-file-name">${dname}<span class="art-file-size">${fmtSize(f.size)}</span></div>
           <div class="art-file-time">生成于 ${fmtTime(f.mtime)}</div>
         </div>
         <a href="${url}" class="dlbtn" download="${dname}">下载</a>
       </div>`;
-    });
-    html += '</div></div>';
   });
-  box.innerHTML = html;
+  html += '</div></div>';
+  return html;
+}
+
+function renderArtifacts() {
+  const box = $('artlist');
+  const list = artCache;
+  if (!list.length) {
+    box.innerHTML = '<div class="fw-size" style="padding:12px;">（还没有任何编译产物 —— 先在对应 Tab 编译一次）</div>';
+    return;
+  }
+  // ---- 板型 Tab 条：同一板型（含其 2MB/4MB 全部产物）只占一个 Tab ----
+  const boards = [];
+  list.forEach(g => {
+    const k = boardKey(g);
+    let e = boards.find(x => x.key === k);
+    if (!e) { e = { key: k, name: g.boardName, groups: [] }; boards.push(e); }
+    e.groups.push(g);
+  });
+  let tabs = '<div class="art-tabbar">';
+  boards.forEach(b => {
+    const flashes = [...new Set(b.groups.map(flashOf).filter(Boolean))].map(f => f.toUpperCase());
+    const badge = flashes.length > 1
+      ? `<span class="art-tab-flash" style="background:#e0e7ff;color:#3730a3;">${flashes.join(' / ')}</span>`
+      : (flashes.length === 1
+        ? `<span class="art-tab-flash" style="background:${flashes[0] === '2MB' ? '#fee2e2' : '#e0f2fe'};color:${flashes[0] === '2MB' ? '#991b1b' : '#075985'};">${flashes[0]}</span>`
+        : '');
+    const cnt = b.groups.reduce((n, g) => n + g.files.length, 0);
+    tabs += `<button class="art-tab${b.key === artActiveKey ? ' active' : ''}" data-artkey="${encodeURIComponent(b.key)}" title="${b.name}（${cnt} 个产物文件${flashes.length ? ' · ' + flashes.join('/') + ' Flash' : ''}）">${b.name}${badge}</button>`;
+  });
+  tabs += '</div>';
+
+  // ---- 当前板型面板：该板型下的每个 flash 分组各一张卡片 ----
+  const cur = boards.find(b => b.key === artActiveKey) || boards[0];
+  box.innerHTML = tabs + cur.groups.map(renderGroupCard).join('');
 }
 
 // ===== 产物刷写到串口（SSE 流式日志） =====
@@ -697,6 +749,13 @@ function flashArtifact(btn) {
 $('btnArtClose').onclick = () => { $('artModal').hidden = true; };
 // 事件委托：产物列表里的刷写 / 打开目录按钮（列表会动态刷新）
 document.addEventListener('click', e => {
+  // 产物页的板型 Tab：切到该板型（含 flash）的产物面板
+  const at = e.target.closest('.art-tab');
+  if (at) {
+    const k = decodeURIComponent(at.dataset.artkey || '');
+    if (k && k !== artActiveKey) { artActiveKey = k; renderArtifacts(); }
+    return;
+  }
   const b = e.target.closest('.flashbtn');
   if (b) { flashArtifact(b); return; }
   const od = e.target.closest('.opendirbtn');
