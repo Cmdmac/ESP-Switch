@@ -101,8 +101,12 @@ cd arduino-cli-web && node server.js   # 打开 http://localhost:8787
 ```
 
 - Tab1「Arduino CLI」：C3 / 8285 等 5 个产品板的编译、上传、串口监视、日志、固件下载。
-- Tab2「ESP32-C2」：C2 三个子板的 `idf.py` 构建 / 烧录（实时日志）。
-- Tab3「构建产物」：按板型分组展示所有编译产物（板子名显示 + 生成时间），每组可直接**刷写**（可选"刷写时擦除"整片擦除含 NVS）、**下载**（保存为板子名）或**打开构建目录**。
+- Tab2「ESP32-C2」：C2 三个子板的 `idf.py` 构建 / 烧录（实时日志），以及**串口监视**。
+  监视走 `arduino-cli-web/tools/serial-monitor.py`（用 IDF venv 的 python + pyserial 直读串口），
+  而不是 `idf.py monitor` —— 后者强制要求 stdin 是交互终端，从网页（管道启动子进程）必然报
+  `Monitor requires standard input to be attached to TTY`。代价：日志里的 `0x...` 地址不会解析成函数名。
+  点「停止监视」会连同进程树一起结束，串口立即释放。
+- Tab3「构建产物」：按板型 Tab 切换展示该板型的全部编译产物（板子名显示 + 生成时间；C2 板同板型的 2MB / 4MB 各一张卡片），每组可直接**刷写**（可选"刷写时擦除"整片擦除含 NVS）、**下载**（保存为板子名）或**打开构建目录**。
 - 首次使用若报 `Cannot import module "click"` 等，先跑 `DEPLOY.md` 第 3 步安装 IDF，并核对 `server.js` 顶部 4 处路径。
 
 ### 手动编译（不依赖网页）

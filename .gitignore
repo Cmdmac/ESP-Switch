@@ -90,3 +90,5 @@ idf-c2/dependencies.lock
 # 本地临时/诊断文件（不要提交）
 .probe.txt
 .gitstat.txt
+__pycache__/
+.gitmsg.txt

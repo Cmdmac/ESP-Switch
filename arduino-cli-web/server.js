@@ -32,6 +32,11 @@ function firstExisting(cands) {
 // 仓库内与 server.js 的相对位置（无论克隆到哪台机器哪个目录都成立）
 const REPO_ROOT = path.resolve(__dirname, '..');
 const PUBLIC_DIR = path.join(__dirname, 'public');
+// 串口监视脚本：用 IDF venv 的 python + pyserial 直读串口。
+// idf.py monitor / idf_monitor.py 强制要求 stdin 是交互终端（isatty），
+// 而 server 是用管道启动子进程，必然报 "Monitor requires standard input to be
+// attached to TTY"；这里只取串口输出，不转发键盘，因此不需要终端。
+const MONITOR_SCRIPT = path.join(__dirname, 'tools', 'serial-monitor.py');
 const SKETCH_DIR = process.env.ESP_SWITCH_SKETCH_DIR || path.join(REPO_ROOT, 'ESP32_Light_Switch');
 const IDF_C2_DIR = process.env.ESP_SWITCH_IDF_C2_DIR || path.join(REPO_ROOT, 'idf-c2');
 // 编译产物目录：放系统临时目录（Windows: %TEMP%，macOS/Linux: /tmp），按 fqbn 分子目录
@@ -278,6 +283,31 @@ function idfShell(innerCmd, venv = IDF_VENV_INFO, cfg = null) {
     + `if [ ! -x "${vpy}" ]; then echo "[IDF] venv python 不存在: ${vpy}"; echo "[IDF] 请运行 install.sh 重建: cd ${IDF_DIR} && ./install.sh esp32c2"; exit 9; fi; `
     + `eval "$("${vpy}" "${IDF_DIR}/tools/idf_tools.py" export)" || { echo "[IDF] idf_tools.py export 失败（venv=${vdir}）"; exit 9; }; `
     + `command -v idf.py >/dev/null 2>&1 || { echo "[IDF] export 后仍未找到 idf.py，检查 IDF_PATH=${IDF_DIR} 与 venv=${vdir}"; exit 9; }; `
+    + `cd "${IDF_C2_DIR}" && ${innerCmd}`;
+}
+
+// 轻量 shell：只准备「venv 的 python 可以直接跑」所需的环境（UTF-8 输出 + venv 加入 PATH），
+// 不跑 idf_tools.py export、不要求 idf.py 存在。给串口监视这类与 IDF 构建无关的命令用，
+// 省掉每次约数秒的环境导出。
+function venvShell(innerCmd, venv = IDF_VENV_INFO) {
+  if (!venv) {
+    const msg = '[IDF] 未找到可用的 IDF python venv（串口监视需要它来提供 pyserial）';
+    return isWin()
+      ? `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; Write-Host "${msg}"; exit 9`
+      : `echo "${msg}"; exit 9`;
+  }
+  const vbin = venv.bin, vpy = venv.py;
+  if (isWin()) {
+    // 与 idfShell 同样需要清掉 MSYS 环境并强制 UTF-8，否则 SSE 收到 GBK 字节会乱码
+    return `$env:MSYSTEM=$null; $env:MSYS=$null; `
+      + `$env:PATH=($env:PATH -split ';' | Where-Object { $_ -notmatch 'msys|mingw|PortableGit' }) -join ';'; `
+      + `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; `
+      + `$env:PATH='${vbin};' + $env:PATH; `
+      + `if (-not (Test-Path '${vpy}')) { Write-Host "[IDF] venv python 不存在: ${vpy}"; exit 9 }; `
+      + `Set-Location '${IDF_C2_DIR}'; ${innerCmd}`;
+  }
+  return `export PATH="${vbin}:$PATH"; `
+    + `if [ ! -x "${vpy}" ]; then echo "[IDF] venv python 不存在: ${vpy}"; exit 9; fi; `
     + `cd "${IDF_C2_DIR}" && ${innerCmd}`;
 }
 
@@ -771,6 +801,27 @@ function scanIdfArtifacts() {
 }
 
 /**
+ * 结束一条流式命令（网页点"停止"或关闭连接时调用）。
+ * Windows 上必须杀掉整棵进程树：命令链是 PowerShell/bash -> python(idf.py/esptool)
+ * -> 工具，只 kill shell 会留下孙进程继续占用串口（表现为"停止监视后串口仍被占用，
+ * 再连就失败"）。taskkill /T /F 覆盖子进程；其它平台用进程组。
+ */
+function killTree(child) {
+  if (!child || !child.pid) return;
+  try {
+    if (isWin()) {
+      spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+    } else {
+      // macOS/Linux 的命令链短（bash -c 会 exec 掉自身），直接 kill 即可；
+      // 不用进程组是因为那需要 spawn 时 detached，Windows 上会弹控制台窗口。
+      child.kill('SIGKILL');
+    }
+  } catch (_) {
+    try { child.kill('SIGKILL'); } catch (__) {}
+  }
+}
+
+/**
  * 以 SSE 方式流式执行一条 arduino-cli 命令。
  * 客户端断开 EventSource 时自动 kill 子进程（对 monitor 尤其重要）。
  * buildDir/fqbn 提供时，命令成功结束后会额外推送 firmware 事件（固件产物清单）。
@@ -791,7 +842,7 @@ function runStream(res, args, label, buildDir, fqbn, board, opts = {}) {
       return;
     }
 
-    const cleanup = () => { try { child.kill('SIGKILL'); } catch (_) {} };
+    const cleanup = () => killTree(child);
     res.on('close', cleanup);
 
     let stdoutBuf = '';
@@ -846,9 +897,9 @@ function ensureArduinoComponent() {
 // 再初始化 IDF 环境后在 idf-c2 目录跑构建/烧录。IDF_C2_BOARD 通过 env 注入。
 // Windows 用 PowerShell 执行（ESP-IDF 官方仅支持 cmd/PowerShell，bash 会被 MSYS 检测拒绝），
 // macOS/Linux 用 bash。
-function runIdfStream(res, innerCmd, label, board, flashOverride, note) {
+function runIdfStream(res, innerCmd, label, board, flashOverride, note, opts = {}) {
   sseHeaders(res);
-  sseSend(res, 'start', { label, cli: 'idf.py', args: innerCmd });
+  sseSend(res, 'start', { label, cli: opts.cli || 'idf.py', args: innerCmd });
   // note：区分"纯烧写（不编译）"与"含构建"，避免用户误以为刷写必须重新编译
   if (note) sseSend(res, 'sys', '[模式] ' + label + note);
   // 打印本次生效的 flash 配置（便于一眼确认按板型/下拉选择注入是否生效；看不到这行说明
@@ -858,7 +909,7 @@ function runIdfStream(res, innerCmd, label, board, flashOverride, note) {
     sseSend(res, 'sys', `[配置] ${board} → Flash=${c.flash}｜分区表=${c.partition}｜sdkconfig=${c.sdkconfig}`);
   }
 
-  const ac = ensureArduinoComponent();
+  const ac = opts.skipComponentCheck ? { ok: true } : ensureArduinoComponent();
   if (!ac.ok) {
     sseSend(res, 'err', 'arduino 组件不可用: ' + ac.reason);
     sseSend(res, 'done', { code: -1 });
@@ -868,7 +919,11 @@ function runIdfStream(res, innerCmd, label, board, flashOverride, note) {
 
   // 实际跑构建（venv 已就绪）
   const startBuild = (venv) => {
-    const shell = idfShell(innerCmd, venv, board ? idfCfgFor(board, flashOverride) : null);
+    // 默认用 idfShell 包装（IDF 环境 + 按板型 sdkconfig 注入）；串口监视用 opts.shell
+    // 传入轻量的 venvShell —— 监视不需要 IDF 构建环境。
+    const shell = (typeof opts.shell === 'function')
+      ? opts.shell(venv)
+      : idfShell(innerCmd, venv, board ? idfCfgFor(board, flashOverride) : null);
     const env = Object.assign({}, process.env, { IDF_C2_BOARD: board });
     let child;
     try {
@@ -884,7 +939,7 @@ function runIdfStream(res, innerCmd, label, board, flashOverride, note) {
       return;
     }
 
-    const cleanup = () => { try { child.kill('SIGKILL'); } catch (_) {} };
+    const cleanup = () => killTree(child);
     res.on('close', cleanup);
 
     child.stdout.on('data', d => sseSend(res, 'out', d.toString()));
@@ -902,7 +957,7 @@ function runIdfStream(res, innerCmd, label, board, flashOverride, note) {
         const bad = diagnoseIdfConfig(board, flashOverride);
         if (bad) sseSend(res, 'err', '⚠ flash 配置自检未通过：' + bad);
       }
-      if (code === 0) {
+      if (code === 0 && !opts.noFirmware) {
         // 产物名 = 工程名（idf.py 绑定），前端显示为「板子名-flash」
         const files = collectIdfFirmware(board, flashOverride);
         sseSend(res, 'firmware', { files, size: null, board: board || '', flash: idfCfgFor(board, flashOverride).flash });
@@ -1168,8 +1223,25 @@ const server = http.createServer((req, res) => {
     const baud = url.searchParams.get('baud') || '115200';
     if (!isValidPort(port)) { res.writeHead(400); res.end('bad port'); return; }
     if (!/^\d{4,7}$/.test(baud)) { res.writeHead(400); res.end('bad baud'); return; }
-    // 同样传未包装命令（runIdfStream 内部包装）
-    runIdfStream(res, `idf.py -p "${port}" -b ${baud} monitor`, '监视 ' + port, '');
+    // idf.py monitor 强制要求 stdin 是交互终端（TTY），而 server 用管道启动子进程，
+    // 必然失败："Monitor requires standard input to be attached to TTY"。
+    // 改用 pyserial 直读串口（tools/serial-monitor.py），只输出日志、不转发键盘。
+    if (IDF_VENV_INFO && fs.existsSync(MONITOR_SCRIPT)) {
+      const py = IDF_VENV_INFO.py;
+      const inner = isWin()
+        ? `& "${py}" "${MONITOR_SCRIPT}" -p "${port}" -b ${baud}`
+        : `"${py}" "${MONITOR_SCRIPT}" -p "${port}" -b ${baud}`;
+      runIdfStream(res, inner, '监视 ' + port, '', '', '（pyserial 直读串口，不依赖终端）', {
+        skipComponentCheck: true,   // 看串口不需要 arduino-esp32 组件
+        noFirmware: true,           // 监视不产生产物，别去扫构建目录
+        cli: 'pyserial',            // 日志抬头别显示成 idf.py
+        shell: (venv) => venvShell(inner, venv),   // 轻量包装：不跑 idf_tools export
+      });
+      return;
+    }
+    // 回退：没有脚本或 venv 时仍用 idf.py monitor（需交互终端，网页里通常不可用）
+    runIdfStream(res, `idf.py -p "${port}" -b ${baud} monitor`, '监视 ' + port, '', '',
+      '（idf.py monitor，需要交互终端）');
     return;
   }
 
